@@ -66,12 +66,36 @@ function streamPair () {
   return [a, b]
 }
 
+// A Map standing in for the account Hyperbee — with `seq` and `cas`, because the
+// `session` responder DEPENDS on both and a stand-in that drops them does not merely
+// simplify, it inverts the outcome. That responder compare-and-swaps its record write
+// (panel/src/rpc.js), and reads "the cas callback never ran" as "the key did not exist,
+// so this put just RESURRECTED a deleted account" — whereupon it undoes the write and
+// refuses the session. A `put` that silently ignores its options therefore made every
+// login in section C answer 'unknown user'. It is why this lane went red the moment
+// zero-write logins landed (a201af1) and stayed red: nothing else here models a bee.
+//
+// So: monotonic `seq` per write, and hyperbee's own cas contract — consulted only when
+// the key ALREADY EXISTS (hyperbee's insert path never calls it), and the write lands
+// only if it returns true.
 function fakeDb (seed = {}) {
-  const m = new Map(Object.entries(seed))
+  const m = new Map()
+  let seq = 0
+  for (const [k, value] of Object.entries(seed)) m.set(k, { value, seq: seq++ })
+  const node = (k) => (m.has(k) ? m.get(k) : null)
   return {
-    async get (k) { return m.has(k) ? { value: m.get(k) } : null },
-    async put (k, v) { m.set(k, v) },
-    async del (k) { m.delete(k) },
+    async get (k) { return node(k) },
+    async put (k, v, opts) {
+      const prev = node(k)
+      if (prev && opts && typeof opts.cas === 'function' && !opts.cas(prev, { key: k, value: v, seq: seq + 1 })) return
+      m.set(k, { value: v, seq: ++seq })
+    },
+    async del (k, opts) {
+      const prev = node(k)
+      if (!prev) return
+      if (opts && typeof opts.cas === 'function' && !opts.cas(prev)) return
+      m.delete(k)
+    },
     _map: m
   }
 }

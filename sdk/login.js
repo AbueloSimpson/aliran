@@ -325,6 +325,16 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
   return {
     streams,
     ...(vod ? { vod } : {}),
+    // Ephemeral event sources (S57): the SOURCES this account may read shards of on the
+    // panel's events Hyperdrive. Carried straight off the same signed record `wrapped` came
+    // from, and empty on every deployment with no ephemeral source — a record written before
+    // the feature has no such field, which is the state production is in today.
+    //
+    // NOT a key and not a capability: the drive holds no encryption key and its shards are
+    // plaintext to anyone with the pointer, so this is an ACL over what a client FETCHES.
+    // It is therefore safe in the ordinary login result in a way `handover` is not, and it
+    // is deliberately not gated behind a flag: every caller wants the lineup it names.
+    eventSources: Array.isArray(user.eventSources) ? user.eventSources.filter((s) => typeof s === 'string' && s !== '') : [],
     token,
     expiresAt,
     deviceId: did,

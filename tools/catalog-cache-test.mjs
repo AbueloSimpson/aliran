@@ -53,6 +53,16 @@ assert.strictEqual(gateCatalogCache(cacheJson({ streams: [{ title: 'no id' }] })
   assert.strictEqual(e.restricted, false, 'restricted normalized')
 }
 
+// The event WINDOW (S57) survives the whitelist as strings, and a non-string one is
+// dropped rather than painted — a rail that renders "starts 19:00" must never be handed a
+// number or an object it will format as junk.
+{
+  const g = gateCatalogCache(cacheJson({ streams: [entry({ startsAt: '2026-08-17T19:00:00.000Z', endsAt: 1765000000000 })] }))
+  assert.strictEqual(g.streams[0].startsAt, '2026-08-17T19:00:00.000Z', 'an event window survives the cache')
+  assert.strictEqual(g.streams[0].endsAt, undefined, 'a non-string window field is dropped')
+  assert.strictEqual(gateCatalogCache(cacheJson()).streams[0].startsAt, undefined, 'a catalog channel grows no window')
+}
+
 // restricted defaults CLOSED on junk, and category accepts string or string-list.
 {
   const g = gateCatalogCache(cacheJson({ streams: [entry({ restricted: 'yes', category: 'news' })] }))

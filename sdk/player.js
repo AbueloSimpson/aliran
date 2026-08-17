@@ -1152,6 +1152,58 @@ const REPLICA_SWEEP_DELAY_MS = 20000
 // poll phase and IPC 'data' never runs — so the yield must be a macrotask.
 const SWEEP_YIELD_EVERY = 250
 
+// --- ephemeral event channels (S57), the viewer half of panel/src/events.js -------------
+//
+// The panel publishes an `ephemeral` source's channels into an epoch-rotated Hyperdrive
+// instead of the signed bee, advertised under ONE bee record. The wire format, verified
+// against panel/src/events.js:
+//
+//   meta/eventsKey            { key, blobsKey }
+//   /v1/index.json            { rev, updatedAt, sources: [ { name, shard, count } ] }
+//   /v1/<source>-<rev>.json   [ entry, … ] — a bare JSON array, UTF-8
+//
+// ⚠ `shard` is the FULL drive path of that source's current revision. NEVER derive a
+// filename from name+rev: `rev` is a GLOBAL counter and a quiet source keeps an old one, so
+// a derived path is a file that does not exist. Read the path the index gives you.
+const EVENTS_KEY = 'meta/eventsKey'
+const EVENTS_INDEX_PATH = '/v1/index.json'
+// Bound on ONE events read (pointer + index + every entitled shard). Everything in here is
+// a get against a sparse replica, so on a client whose panel socket has died it can park
+// forever — the hazard _currentChannel and _readUpdatesManifest already race a timer for.
+// A read that misses its bound is ABANDONED and the previous snapshot stands: a lineup that
+// lost its events would read to a host as "those channels are gone".
+const EVENTS_READ_MS = 12000
+// Periodic re-read. Events churn on the panel's source schedule (~30 min) and a viewer who
+// never zaps and never sees a catalog append would otherwise sit on the lineup it read at
+// login. Deliberately coarse: each tick is one index.json get off a warm replica, and it
+// pushes ONLY when the feed really moved (see _kickEvents), so an idle television stays
+// silent instead of re-emitting a lineup nobody asked for.
+const EVENTS_REFRESH_MS = 300000
+// Floor between the ZAP-triggered reads. A viewer surfing with a remote produces a channel
+// change every few hundred ms; refreshing on each one turns a courtesy into a poll loop.
+// The timer and the pointer tick are never floored — only this opportunistic trigger is.
+const EVENTS_ZAP_MIN_MS = 15000
+// How many abandoned events reads may be outstanding before a refresh stops starting new
+// ones. A bounded refresh cannot cancel its inner read (no per-call timeout reaches
+// hypercore through hyperbee/hyperblobs), so without a cap a five-minute timer against an
+// unreachable drive leaks one parked read per tick for the life of the process — ~288 a day,
+// for ever.
+//
+// ⚠ THE NUMBER IS A TRADE, NOT A TIGHTNESS CONTEST, and it was measured at 2 first: a cap
+// that low WEDGES. Two reads parked on paths that will never be served (a torn index, a
+// panel bug) stop every later refresh, including the one for a completely different — and
+// perfectly readable — index revision. The lineup then freezes at its last good snapshot
+// until a pointer flip forces one through. Eight keeps the leak trivially bounded while
+// leaving a stuck client room to read its way out; the residual is that a client with eight
+// permanently unservable reads serves a stale (never truncated) events lineup until a
+// pointer flip, which is the same outcome an unreadable drive produces anyway.
+const EVENTS_PARKED_MAX = 8
+// …and the ceiling for a FORCED read (a meta/ pointer tick). Higher rather than unbounded:
+// see the argument in _refreshEvents — a force is the call that opens a new epoch, and
+// opening it is what settles the reads parked on the retired one, so it must always have
+// room to run while still being bounded.
+const EVENTS_PARKED_MAX_FORCED = 12
+
 export class AliranPlayer extends Emitter {
   constructor ({ panelPubKey, panelPeer, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, metaBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
@@ -1215,7 +1267,59 @@ export class AliranPlayer extends Emitter {
     this._epgDrive = null // sparse replica of the CURRENT guide epoch drive (meta/epgKey)
     this._epgDiscovery = null
     this._epgKeyHex = null // the drive key _epgDrive was opened by — the swap detector
-    this._epgWatcher = null
+    this._epgWatcher = null // ALSO follows meta/eventsKey — one watcher, one range (see _watchMetaPointers)
+    // --- ephemeral event channels (S57): the panel's events drive, meta/eventsKey ---
+    //
+    // ⚠ EVERY FIELD HERE IS INERT UNTIL A USER RECORD SAYS OTHERWISE. `_eventSources` is
+    // the panel's `user.eventSources` ACL, and on a deployment with no ephemeral source no
+    // record carries it — so it stays empty, _refreshEvents short-circuits before it ever
+    // touches the bee, and nothing below is ever constructed. That is the state production
+    // ships into today (nothing is marked ephemeral), and it must cost exactly nothing.
+    this._eventsDrive = null // sparse replica of the CURRENT events epoch drive
+    this._eventsDiscovery = null
+    this._eventsKeyHex = null // the drive key it was opened by — the swap detector (epochs rotate)
+    this._eventsOpen = null // single-flight open/swap (the _openEpg pattern, swap included)
+    // The SOURCES this viewer may read shards of. An ACL, not a capability: the drive
+    // carries no encryption key and the shards are plaintext, so this gates what the client
+    // FETCHES, never what it could read. Panel-signed (it rides `user/<name>`), which is
+    // exactly as strong as the `wrapped` map beside it — and no stronger.
+    this._eventSources = []
+    // source -> { shard, entries[] }: the last GOOD read of each entitled shard. STICKY on
+    // purpose. A failed, truncated or malformed read leaves the previous entry standing, so
+    // a momentarily unreadable drive costs freshness and never a channel.
+    this._eventShards = new Map()
+    this._eventsRev = -1 // index rev the snapshot was built at (-1 = "must re-read")
+    this._eventsAclKey = '' // the ACL the snapshot was BUILT for — a bouquet change re-reads
+    // …and the ACL the last refresh was ATTEMPTED for. Separate on purpose: the built key
+    // is what defeats the rev short-circuit, the attempted key is what stops the forced
+    // chain in _refreshEvents spinning on a drive that will not read. See _eventsAclStale.
+    this._eventsAclAttempted = ''
+    // Event ids the CATALOG turned out to govern while this viewer holds no grant for them
+    // (see the refusal in _resolveStream). Suppressed from the merged lineup so it stops
+    // offering a channel it will refuse to tune — the display would otherwise carry the
+    // DRIVE record's flags (restricted:false) for an id the catalog restricts.
+    //
+    // Derived at TUNE time, never by a sweep: answering it up front would cost one
+    // catalog/<id> read per published event on every push, which is precisely the
+    // per-channel bee read this whole feature exists to delete. So the lineup is honest
+    // from the first contact with a colliding id rather than before it, and the set is
+    // invalidated whenever the catalog moves (see _watchCatalog).
+    this._eventShadowed = new Set()
+    this._eventsRefresh = null // single-flight bounded refresh
+    this._eventsSeq = 0 // only the most recently STARTED refresh may install (see _doRefreshEvents)
+    this._eventsAt = 0 // when the last refresh STARTED (the zap trigger's floor)
+    this._eventsParked = 0 // inner reads that have not settled — bounded, see _refreshEvents
+    // The meta/ pointer signal, as a pair of COUNTERS rather than a flag. `want` is bumped by
+    // every meta/ tick; `seen` records the highest `want` a completed pointer read had already
+    // captured when it ISSUED its get. A boolean could not express the window that matters: a
+    // flip signalled while a get is in flight would be cleared by that get's answer, which was
+    // read before the flip. Stale is `seen < want`, and only a read that started after the
+    // signal can clear it.
+    this._eventsPointerWant = 0
+    this._eventsPointerSeen = 0
+    this._eventsTimer = null // periodic re-read tick
+    this._eventsRefreshMs = EVENTS_REFRESH_MS // tests shrink it
+    this._eventsReadMs = EVENTS_READ_MS // tests shrink it
     this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
     this._activeFeedKey = null // its _feeds key — _trimFeeds must never evict this one
     // Cache bound. Big enough that surfing a category and coming back is still instant
@@ -1656,6 +1760,7 @@ export class AliranPlayer extends Emitter {
     // Additive — every existing listener takes one argument and is untouched.
     this.emit('streams', streams, this._vod || undefined)
     this._schedulePostLogin() // prewarm + stale-replica sweep, STAGGERED — see the constants
+    this._startEventsRefresh() // idempotent: one periodic events re-read per engine, not per login
     return streams
   }
 
@@ -2223,10 +2328,12 @@ export class AliranPlayer extends Emitter {
         },
         onPeers: (list) => this.emit('remotes', list),
         onPlay: async ({ streamId, from }) => {
-          // THE ENTITLEMENT CHECK, against this device's OWN login snapshot. The peer sent a
-          // name; everything that could turn a name into bytes — the feed key, the sealed
-          // stream key — comes from here and never from the wire.
-          if (!this._entitled.has(streamId)) {
+          // THE ENTITLEMENT CHECK, against this device's OWN state. The peer sent a name;
+          // everything that could turn a name into bytes — the feed key, the sealed stream
+          // key, an events entry's provider url — comes from here and never from the wire.
+          // _playable is the same door resolve() opens, so a channel this television can
+          // tune is a channel a phone can point it at, and nothing else is.
+          if (!this._playable(streamId)) {
             throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unentitled, 'this device is not entitled to ' + streamId)
           }
           const s = this._streams.find((x) => x.id === streamId) || null
@@ -2711,11 +2818,17 @@ export class AliranPlayer extends Emitter {
     // remote `play` does. One line, one place, and it cannot be forgotten by a future
     // return path added inside _resolveStream. See _noteRemoteStatus().
     this._noteRemoteStatus()
+    // A channel change is the cheapest honest moment to notice the events feed moved: the
+    // viewer is at the lineup, and an event that ended twenty minutes ago is exactly what
+    // they are about to try to tune. Floored (EVENTS_ZAP_MIN_MS) so surfing with a remote
+    // cannot turn a courtesy into a poll loop, fire-and-forget so it cannot delay this
+    // tune, and silent unless the feed really moved. AFTER the resolve, never before.
+    this._kickEvents(EVENTS_ZAP_MIN_MS)
     return out
   }
 
   async _resolveStream (streamId) {
-    const keys = this._entitled.get(streamId)
+    const keys = this._playable(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
     // Live feeds are SESSION cores under the broadcaster's ephemeral buffer: a
     // restart publishes a fresh feedKey to the catalog while the per-user sealed
@@ -2724,6 +2837,27 @@ export class AliranPlayer extends Emitter {
     // restarts without re-login. A re-KEYED stream (new encryption key) still needs
     // a fresh login — that one is a deliberate access-control boundary.
     const chan = await this._currentChannel(streamId, keys)
+    // ⚠⚠ THE EVENTS DOOR IS NOT A CATALOG GRANT, AND THE LIVE-RECORD OVERRIDE ABOVE MUST NOT
+    // APPLY TO IT. For an id in `_entitled` the override is the whole point (an admin url
+    // edit reaches a viewer on the next tune). For an id admitted ONLY by the events ACL it
+    // is an entitlement crossing: `user.eventSources` says nothing about `catalog/<id>`, so
+    // letting the catalog record win hands a viewer with NO grant that channel's operator
+    // url, its provider headers — a bearer token, in the shape a premium feed actually uses
+    // — and playback past a `restricted:true` parental gate the drive entry does not carry.
+    //
+    // The rule instead is panel/src/packages.js resolutionSnapshot's, applied honestly in
+    // BOTH directions: a catalog record GOVERNS the id, so an events entitlement does not
+    // reach it — and a viewer holding no grant for it is simply not entitled. Refuse.
+    //
+    // This is not supposed to be reachable at all: applyEphemeral will not publish an id a
+    // foreign catalog record holds, and addStream/applyFeed now refuse the mirror image
+    // (panel/src/ops.js, panel/src/sources.js). This is the client failing closed anyway,
+    // because a shipped television build cannot be recalled and the server half can be older
+    // than it is.
+    if (keys.fromEvents && chan.found) {
+      this._shadowEvent(streamId)
+      throw new Error('not entitled to ' + streamId)
+    }
     // Redirect channels (S23): the record carries an operator-set https URL viewers
     // play INSTEAD of a P2P feed — no feed open, no swarm join, no watchdogs (there
     // is no replica to heal; remote-URL errors belong to the host player). The live
@@ -2961,7 +3095,11 @@ export class AliranPlayer extends Emitter {
   }
 
   async _doStartCast (streamId, { advertiseHost, receiverHost, readIdleMs, reclaim } = {}) {
-    const keys = this._entitled.get(streamId)
+    // The same door resolve() uses, so an events-drive channel casts exactly as it plays:
+    // it is a redirect, and the redirect branch below hands the receiver the operator URL
+    // without opening a socket. See _playable for why the two entitlements are not the same
+    // KIND of thing and why neither weakens the other.
+    const keys = this._playable(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
     // advertiseHost becomes the authority of a token-bearing URL — check its SHAPE before
     // anything else, so a caller typo fails on the call rather than on the receiver.
@@ -2975,6 +3113,12 @@ export class AliranPlayer extends Emitter {
     // Live catalog read first (the resolve() contract): an admin URL edit or a feedKey
     // rotation must reach a cast the same way it reaches a tune.
     const chan = await this._currentChannel(streamId, keys)
+    // The same refusal resolve() makes, and for the same reason — a cast hands the URL to a
+    // receiver on the LAN, so the crossing would be one step further out. See _resolveStream.
+    if (keys.fromEvents && chan.found) {
+      this._shadowEvent(streamId)
+      throw new Error('not entitled to ' + streamId)
+    }
     const type = chan.type === 'vod' ? 'vod' : 'live'
 
     // Redirect channels: the viewer already plays an operator-set remote https URL, so
@@ -4195,6 +4339,51 @@ export class AliranPlayer extends Emitter {
     this._writeReplicas(survivors)
   }
 
+  // What every playback door means by "this viewer may watch it": the login snapshot's
+  // sealed grant, or — failing that — an entry on the events drive. Returns the SAME shape
+  // either way (the `fallback` _currentChannel takes) plus `fromEvents`, or null.
+  //
+  // ⚠⚠ `fromEvents` IS LOAD-BEARING, NOT BOOKKEEPING. It records WHICH DOOR OPENED, and
+  // every caller must treat the two differently at the point where the live catalog record
+  // would otherwise win: see the refusal in _resolveStream. Dropping this flag re-opens an
+  // entitlement crossing — an events-only viewer resolving to an ungranted catalog
+  // channel's url, its provider headers, and past its parental gate.
+  //
+  // The two halves are entitled differently and neither is weakened by the other:
+  //
+  //   _entitled       a per-channel grant sealed to the account key. The bee's `wrapped`
+  //                   map, opened at login. Cryptographic.
+  //   the drive       `user.eventSources` — a panel-signed list of SOURCES, applied when the
+  //                   shard was FETCHED (see _doRefreshEvents). An ACL, and only an ACL: the
+  //                   events drive carries no encryption key and its shards are plaintext to
+  //                   anyone holding the pointer, so this gates what a client fetches and
+  //                   NOT what it could read. It is the same strength the redirect half of
+  //                   the catalog already has — a redirect channel's url and headers sit in
+  //                   cleartext in the replicated bee, and _refreshEntitlements admits one
+  //                   on the strength of a signed record for exactly that reason.
+  //
+  // An ephemeral entry carries no encryptionKey (protection is 'none' — there is no minted
+  // stream secret and so nothing to unseal), which is why nothing here looks in
+  // `user.wrapped` for it. In practice every published entry is a redirect and takes
+  // resolve()'s redirect return; a feedKey-carrying one would fall through to the honest
+  // 'channel is not broadcasting right now' rather than into an undefined key.
+  _playable (streamId) {
+    const grant = this._entitled.get(streamId)
+    if (grant) return grant
+    const e = this._eventById(streamId)
+    if (!e) return null
+    return {
+      fromEvents: true,
+      feedKey: e.feedKey ?? null,
+      encryptionKey: null,
+      redirect: e.redirect === true && !!e.url,
+      url: e.url ?? null,
+      headers: e.headers ?? null,
+      type: e.type ?? null,
+      durationSec: null
+    }
+  }
+
   // Current catalog view of a stream, bounded and fallback-safe. feedKey: follow the
   // replicated catalog (a broadcaster restart publishes a fresh key in RAM-buffer
   // mode), falling back to the login-time value — a readable record with feedKey null
@@ -4215,6 +4404,10 @@ export class AliranPlayer extends Emitter {
         const feedKey = v.feedKey || fallback.feedKey || null
         if (feedKey) this._feedKeyLive.set(streamId, feedKey) // the synchronous /feedthumb route's only view of a rotation
         return {
+          // A catalog record REALLY EXISTS for this id and was readable just now. Only the
+          // events path reads this (see _resolveStream): for a catalog grant it is always
+          // true-or-fallback and says nothing a caller needs.
+          found: true,
           feedKey,
           redirect: !!(v.redirect && v.url),
           url: v.url || null,
@@ -4234,7 +4427,14 @@ export class AliranPlayer extends Emitter {
     } catch { /* replicated catalog momentarily unreadable — use the cached values */ } finally {
       clearTimeout(timer)
     }
-    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null, headers: fallback.url ? (fallback.headers ?? null) : null, type: fallback.type ?? null, durationSec: fallback.durationSec ?? null }
+    // found:false covers BOTH "no such record" and "the read failed or timed out". The
+    // events refusal below therefore fails OPEN on an unreadable catalog — deliberately, and
+    // it is the small residue rather than the hole: the drive entry is served, never the
+    // catalog record, so nothing an operator put in the catalog can leak through this path.
+    // The exposure is "a drive channel the catalog has since restricted keeps playing for
+    // one tune", against the same momentary-unreadability window every caller here already
+    // falls back through.
+    return { found: false, feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null, headers: fallback.url ? (fallback.headers ?? null) : null, type: fallback.type ?? null, durationSec: fallback.durationSec ?? null }
   }
 
   // feedKey-only shim for the callers that never care about the redirect class
@@ -4313,13 +4513,30 @@ export class AliranPlayer extends Emitter {
     this._closeFeeds() // fire-and-forget close of every opened feed (see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
-    const closing = [this._assetsDrive, this._epgDrive, this._updatesDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._epgDrive = this._updatesDrive = this._panelBee = this._store = null
+    if (this._eventsTimer) { clearInterval(this._eventsTimer); this._eventsTimer = null }
+    const closing = [this._assetsDrive, this._epgDrive, this._eventsDrive, this._updatesDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._eventsDrive = this._updatesDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._epgDiscovery = null
     this._epgKeyHex = null
     this._assetsOpen = null
     this._epgOpen = null
+    // The events replica AND everything derived from it. Unlike the corruption purge below
+    // this is terminal and the session dies with it, so the ACL and the cached shards go
+    // too — a service switch reuses the engine, and another operator's panel must not
+    // inherit this one's entitlement or its lineup.
+    this._eventsDiscovery = null
+    this._eventsKeyHex = null
+    this._eventsOpen = null
+    this._eventSources = []
+    this._eventShards = new Map()
+    this._eventsRev = -1
+    this._eventsAclKey = ''
+    this._eventsAclAttempted = ''
+    this._eventsAt = 0 // …including the zap floor, so a reused engine's first zap may read
+    this._eventShadowed = new Set()
+    this._eventsPointerWant = 0
+    this._eventsPointerSeen = 0
     this._updatesDiscovery = null
     this._updatesOpen = null
     this._updateCheck = null // the verdict names an entry on the closed drive — a fresh check must precede a download
@@ -6173,7 +6390,7 @@ export class AliranPlayer extends Emitter {
       if (typeof t.unref === 'function') t.unref()
     }
     this._watchCatalog()
-    this._watchEpgKey()
+    this._watchMetaPointers()
     this._watchGrants() // no-op before the first login; re-arms the grant watch after a purge
   }
 
@@ -6194,6 +6411,11 @@ export class AliranPlayer extends Emitter {
     const prev = this._catalogWatcher; this._catalogWatcher = null
     if (prev) prev.close().catch(() => {}) // .catch, not try/catch — see _watchGrants
     this._catalogWatcher = watchRange(this._panelBee, { gt: 'catalog/', lt: 'catalog0' }, async () => { // '0' = next char after '/'
+      // The events shadow set caches a CATALOG fact ("this id has a record I hold no grant
+      // for"), so the catalog moving is exactly what invalidates it — an operator deleting
+      // the colliding record must give the drive its channel back. Cleared before the push,
+      // so this rebuild is the one that puts it back in the lineup.
+      if (this._eventShadowed.size) this._eventShadowed = new Set()
       await this._recover(() => this._pushCatalog())
       await this._maybeReresolveActiveFeed() // follow a rotated feedKey for the stream being watched
     }, {
@@ -6334,6 +6556,32 @@ export class AliranPlayer extends Emitter {
       this._entitled.set(id, { feedKey: null, encryptionKey: null, redirect: true, url: v.url, headers: v.headers ?? null, type: v.type ?? null, durationSec: v.durationSec ?? null })
       changed = true
     }
+    // …and the EVENTS ACL, off the same signed record and on the same tick (S57). A bouquet
+    // change is the only thing that moves `eventSources` (panel/src/packages.js derives it
+    // from the registry precisely so a momentarily empty shard cannot), so this is normally
+    // a string compare against an unchanged list and costs nothing.
+    //
+    // ⚠ SYMMETRIC IN BOTH DIRECTIONS, unlike the `wrapped` loops above, and it can be:
+    // there is no sealed key to lose, so admitting a source needs no account key and
+    // re-admitting one is always possible. That is the one place this half is SIMPLER than
+    // the grant map rather than weaker than it.
+    const nextSources = Array.isArray(node.value.eventSources) ? node.value.eventSources.filter((s) => typeof s === 'string' && s !== '') : []
+    if (nextSources.join(',') !== this._eventSources.join(',')) {
+      this._eventSources = nextSources
+      // The merge filters by this list live, so a REMOVAL takes effect on the push below
+      // with no read at all. An ADDITION needs the new shard fetched — and _doPushCatalog
+      // deliberately no longer starts a read of its own (that edge closed a feedback loop),
+      // so this is the one place that has to ask. Kicked, not awaited: an unreachable drive
+      // must not delay the push that carries the REST of this record's change, and the
+      // fetch re-pushes itself when it lands.
+      //
+      // ⚠ FORCED. An unforced kick is answered by whatever refresh is already in flight, and
+      // that refresh captured its `want` BEFORE this line moved the ACL — so it never fetches
+      // the new source, reports no change, and the bouquet an operator just granted does not
+      // appear until the periodic tick five minutes later. Measured 30/30 before this.
+      changed = true
+      this._kickEvents(0, true)
+    }
     if (changed && this._username === who) await this._pushCatalog()
   }
 
@@ -6359,6 +6607,16 @@ export class AliranPlayer extends Emitter {
   // process, silently and with no error. A timed-out sweep is abandoned WITHOUT emitting:
   // a truncated lineup would read as "these channels are gone", so the previous list
   // stands and the next append retries.
+  //
+  // THE EVENTS HALF NEVER RIDES THIS BUDGET (S57). Every trigger that wants a fresh events
+  // read ends in _pushCatalog rather than growing a coalescer of its own — the periodic
+  // tick, a channel change and a meta/eventsKey flip all land here — but the read itself is
+  // KICKED and not awaited (see _doPushCatalog on why "concurrently awaited" is the same
+  // mistake wearing a different word). So an events drive that has gone quiet costs a
+  // catalog push nothing at all, and the sticky snapshot means the merge is always coherent
+  // anyway. Between that and the abandon-without-emitting rule above, no emission this
+  // method makes can drop a channel the previous one carried unless the panel really took
+  // it away.
   _pushCatalog () {
     if (this._pushPending) { this._pushAgain = true; return this._pushPending }
     const run = async () => {
@@ -6384,10 +6642,53 @@ export class AliranPlayer extends Emitter {
     // must be told about, not a pre-login state to suppress.
     if (!this._username || !this._panelBee) return
     const port = await this._ensureServer()
+    // ⚠⚠ AND NOTHING EVENTS-RELATED IS AWAITED — OR EVEN STARTED — HERE.
+    //
+    // Awaited first, which was wrong twice over: `Promise.all` is a BARRIER, not
+    // concurrency, so a parked events read spent its whole bound on every push (measured:
+    // 12,003 ms of a 30 s ceiling; under a smaller ceiling the push was ABANDONED and a
+    // grant revocation never reached the host, over a drive with nothing to do with it).
+    //
+    // Then KICKED here instead, which was worse: _kickEvents re-enters _pushCatalog when the
+    // refresh reports a change, and being fire-and-forget it lands AFTER `_pushPending`
+    // clears, so the do/while coalescer cannot absorb it. That closes a push -> refresh ->
+    // push cycle with no damping anywhere in it. Measured against an index whose rev moved on
+    // every read: 41,450 'streams' emissions and 41,449 index reads in THREE SECONDS. A
+    // healthy panel settles at 2, but a rotation racing a publish — or anything else that
+    // flaps the shard-path fingerprint — is an unthrottled emit storm into the RN bridge,
+    // triggerable from the events drive, which is explicitly not a capability.
+    //
+    // So there is NO push -> refresh edge at all, exactly as before this feature existed. The
+    // events snapshot is refreshed by its three designed triggers and nothing else (the
+    // periodic tick, a channel change, a meta/ pointer flip), plus the two explicit kicks
+    // that bracket a session: login and a corruption purge. `_eventShards` is STICKY, so the
+    // merge below always has a coherent snapshot to work from whenever it runs.
     const streams = []
+    const seen = new Set()
     for (const id of this._entitled.keys()) {
       const node = await this._panelBee.get('catalog/' + id)
-      if (node && node.value) streams.push(this._display(port, id, node.value))
+      if (node && node.value) { streams.push(this._display(port, id, node.value)); seen.add(id) }
+    }
+    // …then the drive's published lineup (S57). These ids are NOT in the bee at all — the
+    // whole point of the feature — so nothing above could have found them.
+    //
+    // THE CATALOG WINS A COLLISION, matching panel/src/packages.js resolutionSnapshot from
+    // the other side: "a record that exists beats one being published, so an id can never be
+    // governed from two places at once". The panel enforces the same rule when it publishes
+    // (sources.js applyEphemeral leaves out any id a manual or foreign catalog channel
+    // already holds), so a collision reaching here means the two disagreed — and the bee,
+    // which is signed and per-user sealed, is the half to believe. ⚠ What this client can
+    // actually compare is the catalog it can SEE, i.e. the entitled set: reading catalog/<id>
+    // for every published event to check the rest would be the per-channel bee read the
+    // feature exists to delete. resolve() closes the remaining gap for the one id that
+    // matters — it re-reads the live record and lets it win (see _resolveStream).
+    for (const e of this._eventEntries()) {
+      if (!e || seen.has(e.id)) continue
+      // …and an id a TUNE has already discovered the catalog governs (see _shadowEvent):
+      // resolve() refuses it, so the lineup must stop offering it.
+      if (this._eventShadowed.has(e.id)) continue
+      seen.add(e.id) // two shards naming one id: incumbent wins, the rule applyEphemeral follows
+      streams.push(this._display(port, e.id, e))
     }
     this._streams = streams
     // The VOD config rides along unchanged: it is login-scoped (the record is read at
@@ -6517,13 +6818,24 @@ export class AliranPlayer extends Emitter {
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
-    const closing = [this._assetsDrive, this._epgDrive, this._updatesDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._epgDrive = this._updatesDrive = this._panelBee = this._store = null
+    const closing = [this._assetsDrive, this._epgDrive, this._eventsDrive, this._updatesDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._eventsDrive = this._updatesDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._epgDiscovery = null
     this._epgKeyHex = null
     this._assetsOpen = null
     this._epgOpen = null
+    // The events REPLICA dies with the store dir; the ACL and the last-read shards do NOT.
+    // Same call _feedKeyLive gets on this path and for the same reason: a corrupt local
+    // cache says nothing about which sources this account may read or what they published,
+    // and dropping the entries here would empty the events half of the lineup over a
+    // recovery the viewer is meant not to notice. _eventsRev is reset so the re-open really
+    // re-reads rather than short-circuiting against a drive that no longer exists on disk.
+    this._eventsDiscovery = null
+    this._eventsKeyHex = null
+    this._eventsOpen = null
+    this._eventsRev = -1
+    this._eventsAclKey = ''
     this._updatesDiscovery = null
     this._updatesOpen = null
     this._updateCheck = null // the entry belonged to the purged replica — force a fresh check (lazy re-open)
@@ -6552,6 +6864,12 @@ export class AliranPlayer extends Emitter {
       await this._openPanel()
       this._openAssets().catch(() => {}) // posters re-replicate in the background once the panel reconnects
       this._openEpg().catch(() => {}) // so does the guide
+      // …and the events drive, whose in-memory lineup carried the viewer through the purge.
+      // The replica is GONE with the store dir, so the pointer genuinely must be re-read —
+      // said in the one vocabulary the forced chain understands, so a refresh left in flight
+      // over the dead store cannot answer for the rebuilt one.
+      this._eventsPointerWant++
+      this._kickEvents(0, true)
     }
   }
 
@@ -6690,21 +7008,69 @@ export class AliranPlayer extends Emitter {
     // channel — a stale entry here would then out-vote the new snapshot's feedKey and
     // point /feedthumb at the previous session's feed for the rest of the session.
     this._feedKeyLive.clear()
+    // The events ACL (S57), rebuilt alongside _entitled and for the same reason: it is this
+    // account's, and a user switch must not leave the previous one's sources named. Empty on
+    // every deployment with no ephemeral source — which is what keeps the whole events path
+    // from ever running there. The cached SHARDS are dropped with it whenever the list moved:
+    // they are per-source data whose entitlement just changed, and _eventEntries filters by
+    // this list anyway, so the only thing keeping them would buy is a re-login to the SAME
+    // account (where the list is identical and the cache is still valid).
+    const nextSources = Array.isArray(res.eventSources) ? res.eventSources.filter((s) => typeof s === 'string' && s !== '') : []
+    if (nextSources.join(',') !== this._eventSources.join(',')) {
+      this._eventShards = new Map()
+      this._eventsRev = -1
+      this._eventsAclKey = ''
+      this._eventsAclAttempted = ''
+    }
+    // The shadow set is a fact about THIS account's grants, so it dies with the session
+    // whatever the ACL did: the incoming viewer may well hold the grant that made an id
+    // unreachable for the last one.
+    this._eventShadowed = new Set()
+    this._eventSources = nextSources
     const display = streams.map((s) => {
       this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, headers: s.headers ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
       return this._display(port, s.id, s)
     })
+    // …and the events half, from whatever is already cached. A WARM engine (a re-login, a
+    // service the viewer signed out of and back into) has the shards in hand and returns the
+    // whole lineup here; a cold one returns the catalog and the events land on the push
+    // _kickEvents fires below, a beat later. That asymmetry is deliberate and it is the same
+    // call _openEpg makes: a login must never wait on a drive read, and a lineup that GREW
+    // one tick after login is a growth, not a truncation. The push path is the one that has
+    // to be incapable of shrinking (see _pushCatalog).
+    const seen = new Set(streams.map((s) => s.id))
+    for (const e of this._eventEntries()) {
+      if (!e || seen.has(e.id)) continue // the catalog wins a collision — see _doPushCatalog
+      seen.add(e.id)
+      display.push(this._display(port, e.id, e))
+    }
     // Set only AFTER the snapshot is rebuilt: _username is what unblocks _pushCatalog,
     // and a catalog append landing mid-login must not push a half-built lineup. Arming
     // the grant watch last, on the finished map, keeps its first catch-up a no-op.
     this._username = username
     this._watchGrants()
+    // Fire-and-forget, beside _openEpg's kick above in spirit and for the same reason: the
+    // read is bounded and its result reaches the host through _pushCatalog, never through
+    // this return value. On a deployment with no ephemeral source it costs one synchronous
+    // early return (_eventSources is empty) and touches neither the bee nor the network.
+    //
+    // FORCED for the same reason _refreshEntitlements is: a login moves the ACL, and a
+    // refresh left in flight from the previous session captured the previous one. When the
+    // two accounts happen to share an ACL the chain sees no staleness and stops, which is
+    // correct — the cached shards are still exactly right.
+    this._kickEvents(0, true)
     return display
   }
 
   // Catalog record -> display shape handed to hosts (login result and live pushes):
   // metadata only — never the feed/encryption keys — with art paths as localhost URLs.
   // order/featured are the panel's curation hints (S16c): rail sort / hero-wallpaper pick.
+  //
+  // ALSO the events drive's published entries (S57), unchanged and on purpose: the panel
+  // writes an ephemeral channel in the CATALOG RECORD'S OWN SHAPE (panel/src/events.js
+  // canonicalEntry) precisely so a client can splice the two lists together and render one
+  // lineup. Every field below reads the same off either side; the only two an event has and
+  // a channel does not are the window at the bottom.
   _display (port, id, cat) {
     return {
       id,
@@ -6739,7 +7105,14 @@ export class AliranPlayer extends Emitter {
       // so a host can gray out an 'unavailable' title (its library deleted it).
       type: cat.type ?? undefined,
       durationSec: cat.durationSec ?? undefined,
-      status: cat.status ?? undefined
+      status: cat.status ?? undefined,
+      // The EVENT WINDOW (S57), ISO-8601 UTC, and what separates an event from a channel.
+      // Only the events drive carries it — a catalog record never has, so these stay
+      // undefined on every channel exactly like epgUrl/order do today, and a host that
+      // never heard of events is untouched. Normally null even on an event (an m3u playlist
+      // has no standard field for either), in which case the host falls back to "on now".
+      startsAt: cat.startsAt ?? undefined,
+      endsAt: cat.endsAt ?? undefined
     }
   }
 
@@ -6819,17 +7192,399 @@ export class AliranPlayer extends Emitter {
     }
   }
 
-  // Follow meta/epgKey rotations live (the catalog watcher's exact arming pattern, bounded to
-  // the meta/ prefix — one tiny record, so ticks are rare and cheap). No onError: a guide
-  // pointer this engine failed to re-read is never worth an 'error' at the host, and
+  // Follow the meta/ POINTERS live (the catalog watcher's exact arming pattern, bounded to
+  // the meta/ prefix — a handful of tiny records, so ticks are rare and cheap). No onError:
+  // a pointer this engine failed to re-read is never worth an 'error' at the host, and
   // watchRange has already re-armed past whatever it was.
-  _watchEpgKey () {
+  //
+  // ONE watcher for BOTH epoch-rotated drives, and deliberately not two. meta/epgKey and
+  // meta/eventsKey live in the same range, a second watchRange over it would double every
+  // tick's work for nothing, and the two rotations are the same event class: a pointer flip
+  // that must reach a WARM viewer without a re-login. watchRange (core/bee-watch.js) is what
+  // keeps that true across a panel bee compaction — a raw bee.watch() goes permanently deaf
+  // at the fork, which on a television is a lineup frozen with no error and no symptom.
+  _watchMetaPointers () {
     if (!this._panelBee) return
     const prev = this._epgWatcher; this._epgWatcher = null
     if (prev) prev.close().catch(() => {})
     this._epgWatcher = watchRange(this._panelBee, { gt: 'meta/', lt: 'meta0' }, () => {
       this._openEpg().catch(() => {}) // fire-and-forget: the guide never delays anything
+      // The events pointer flips once per epoch (panel/src/events.js rule 3). FORCED,
+      // because the refresh already in flight — and on a busy client there usually is one —
+      // was built against the PREVIOUS epoch and would answer "nothing changed" for a swap
+      // it never saw; the pointer counters plus the chain in _refreshEvents are what make this
+      // tick really re-read the pointer rather than merely ask something that already had.
+      // The push follows only if the lineup actually moved, so a rotation the panel makes
+      // routine stays invisible to the host — which is the whole difference between
+      // modelling this on _openEpg and on _doOpenAssets.
+      this._eventsPointerWant++
+      this._kickEvents(0, true)
     })
+  }
+
+  // --- ephemeral event channels (S57) ------------------------------------------------
+  //
+  // ~550 sports events a day used to live as records in the panel's append-only signed
+  // bee, which reclaims nothing: measured at ~198 MB/day, and it filled a 24 GB disk. The
+  // panel now publishes them into an epoch-rotated Hyperdrive instead (panel/src/events.js)
+  // and a full sync appends ZERO blocks and ZERO bytes to the bee. This is the half that
+  // lets a viewer see them.
+  //
+  // MODELLED ON _openEpg, NOT ON _doOpenAssets, and the difference is the whole feature:
+  // the assets pointer is written once and never moves, so its open returns early forever
+  // on `if (this._assetsDrive) return`. The events pointer flips EVERY EPOCH. An open that
+  // could not follow a swap would leave a warm viewer replicating a drive the panel purges
+  // after its grace window — the lineup would simply stop advancing, with no error.
+  //
+  // THE STATE THIS SHIPS INTO: nothing in production is marked ephemeral, so
+  // meta/eventsKey DOES NOT EXIST. Every path below has to read that as "no events", once,
+  // quietly and without retrying — and it does so one level earlier than the pointer read:
+  // no user record carries `eventSources` either, so _refreshEvents returns before it
+  // touches the bee at all and this drive is never opened.
+
+  // Open (or SWAP to) the current events epoch drive advertised under meta/eventsKey.
+  // Single-flight — the refresh timer, a zap and a pointer tick can all land together.
+  _openEvents () {
+    if (!this._eventsOpen) {
+      const p = this._doOpenEvents().then(
+        (r) => { if (this._eventsOpen === p) this._eventsOpen = null; return r },
+        (err) => { if (this._eventsOpen === p) this._eventsOpen = null; throw err }
+      )
+      this._eventsOpen = p
+    }
+    return this._eventsOpen
+  }
+
+  async _doOpenEvents () {
+    if (!this._panelBee || !this._store || !this._swarm) return
+    // ⚠ CAPTURED BEFORE THE READ IS ISSUED, NOT AFTER IT RESOLVES. A flip signalled WHILE
+    // this get is in flight must not be answered by it — the get was issued against the
+    // earlier state and can only return the earlier value. Recording what was known at issue
+    // time is what leaves `seen < want` afterwards, so the forced chain in _refreshEvents
+    // runs one more read instead of accepting a stale answer. (Measured before this: 40/40
+    // reproducible — pointer bbbb, engine still aaaa, one pointer get, chain satisfied.)
+    const want = this._eventsPointerWant
+    const meta = await this._panelBee.get(EVENTS_KEY)
+    // A pointer read that STARTED after the signal has now completed, whatever it said, so
+    // that signal is answered. Monotonic: a slower read that started earlier must never pull
+    // `seen` back down. "The record has not moved" is a real answer here — the meta/ tick
+    // fires for meta/epgKey and every other meta record too.
+    if (want > this._eventsPointerSeen) this._eventsPointerSeen = want
+    const keyHex = meta?.value?.key
+    // NO POINTER = NO EVENTS, and that is the ordinary case, not a failure: a deployment
+    // with no ephemeral source never mints a drive and never writes this record. Return —
+    // do not throw, do not schedule a retry, do not touch the lineup.
+    if (!keyHex || typeof keyHex !== 'string' || !/^[0-9a-f]{64}$/i.test(keyHex)) return
+    if (this._eventsKeyHex === keyHex && this._eventsDrive) return // current epoch already open
+    // The replica namespace carries the drive key, so each epoch's cores are their own
+    // namespace and the retired one is purged wholesale (the guide's reasoning exactly).
+    const drive = new Hyperdrive(this._store.namespace('events-replica-' + keyHex.slice(0, 16)), b4a.from(keyHex, 'hex'))
+    await drive.ready()
+    const discovery = this._swarm.join(drive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
+    const old = this._eventsDrive
+    const oldDiscovery = this._eventsDiscovery
+    this._eventsDrive = drive
+    this._eventsDiscovery = discovery
+    this._eventsKeyHex = keyHex
+    // ⚠ FORCE A RE-READ, and note that the rev alone would NOT have done it: revisions are
+    // monotonic ACROSS epochs and a rotation COPIES the current tree, so the fresh drive
+    // opens on the same rev the retired one ended at. Without this the snapshot would stay
+    // anchored to a drive we no longer read from and the next real publish would be the
+    // first thing to move it. `_eventShards` is deliberately NOT cleared: it is what keeps
+    // serving the host across the swap.
+    this._eventsRev = -1
+    // Retire the previous epoch's replica: leave its topic, close it, free its disk.
+    // Fire-and-forget — the swap itself must never wait on cleanup.
+    if (old) {
+      ;(async () => {
+        try { if (oldDiscovery) await oldDiscovery.destroy() } catch {}
+        try { await old.purge() } catch { try { await old.close() } catch {} }
+      })().catch(() => {})
+    }
+  }
+
+  // Re-read the published lineup. Resolves true when the snapshot MOVED, false otherwise —
+  // including every failure, because "nothing changed" is exactly what a caller should do
+  // with an unreadable drive. Never rejects.
+  //
+  // BOUNDED, for the reason _pushCatalog states about itself: every read in here is a get
+  // against a sparse replica and on a client whose panel socket has died it can park
+  // forever. A refresh that misses its bound is abandoned and the previous snapshot stands.
+  _refreshEvents ({ minAgeMs = 0, force = false } = {}) {
+    if (this._eventsRefresh) {
+      // ⚠ A READ THAT PREDATES THE CHANGE CANNOT ANSWER FOR IT. Two different changes are
+      // invisible to an in-flight refresh, and BOTH have to be tested for, because handing
+      // its verdict back reports "nothing changed" and nothing re-reads:
+      //
+      //   THE POINTER  the in-flight refresh has been through _openEvents already and is
+      //                holding the PREVIOUS epoch, so a swap is swallowed.
+      //   THE ACL      it captured `this._eventSources` at entry, so a bouquet granted since
+      //                is not in its `want`: it never fetches the new source's shard, and it
+      //                then installs `_eventsAclKey` for the OLD acl against a live one that
+      //                has moved. Measured 30/30: eventSources ['A'] -> ['A','B'] against an
+      //                in-flight read left the lineup with A's channels only and no push.
+      //
+      // The ACL test is deliberately NOT the pointer test — a bouquet change moves no
+      // pointer, so `force` alone fixed nothing here. Each gets the same want/seen shape.
+      //
+      // Terminating by construction, and the reason both predicates compare against what an
+      // ATTEMPT recorded rather than what a SUCCESS installed: a fresh refresh stamps
+      // `_eventsAclAttempted` before its first read and `_eventsPointerSeen` as soon as its
+      // pointer get returns, so one hop clears the chain even when the read then fails. A
+      // failed attempt still leaves `_eventsAclKey` behind, which is what defeats the rev
+      // short-circuit and makes the next periodic tick retry.
+      if (!force) return this._eventsRefresh
+      return this._eventsRefresh.then(() => (this._eventsStale() ? this._refreshEvents({ force: true }) : false))
+    }
+    // The zap trigger's floor. Never applied to the timer or the pointer tick, and never to
+    // _doPushCatalog — the first push after a login MUST be allowed to read.
+    if (minAgeMs > 0 && this._eventsAt !== 0 && Date.now() - this._eventsAt < minAgeMs) return Promise.resolve(false)
+    // ⚠ AND A PARKED READ IS NEVER STACKED ON. A bounded refresh ABANDONS its inner read —
+    // hyperbee and hyperblobs plumb no per-call timeout down to hypercore, so there is
+    // nothing to cancel — and on a timer that fires every five minutes for the life of the
+    // process, "abandon and start another" is unbounded accumulation. At most
+    // EVENTS_PARKED_MAX may be outstanding; past that a refresh reports "nothing changed",
+    // which is exactly what an unreadable drive means anyway.
+    //
+    // It cannot deadlock: an abandoned read settles when the panel socket comes back
+    // (hypercore re-issues its block requests), and a retired epoch's reads are rejected
+    // outright when _doOpenEvents purges that replica.
+    //
+    // ⚠ A FORCE GETS A HIGHER CEILING, NOT AN EXEMPTION. It used to be exempt outright, on
+    // the argument that a pointer flip makes the parked reads irrelevant — true only when the
+    // pointer really moved. _watchMetaPointers forces on EVERY meta/ write, and meta/epgKey
+    // and the rest share that range, so a tick that moved nothing left the old replica in
+    // place with its reads still parked: measured at 12 outstanding after 12 such ticks
+    // against a bound of 2. But it cannot be capped at the same number either — a force is
+    // what OPENS the new epoch, and opening it is what purges the replica whose reads are
+    // parked, so capping it at the unforced ceiling would let two stuck reads block the one
+    // call able to unstick them. Hence headroom: bounded, and always able to make progress.
+    if (this._eventsParked >= (force ? EVENTS_PARKED_MAX_FORCED : EVENTS_PARKED_MAX)) return Promise.resolve(false)
+    this._eventsAt = Date.now()
+    let timer
+    // .catch on the inner promise, not on the race: the abandoned call keeps running after
+    // the timer wins, and an unobserved rejection is not a warning in the Bare worklet — it
+    // is the process dying (the S22 crash class).
+    this._eventsParked++
+    const raw = this._doRefreshEvents().then(
+      (v) => { this._eventsParked--; return v },
+      () => { this._eventsParked--; return false }
+    )
+    const bounded = Promise.race([
+      raw,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), this._eventsReadMs)
+        if (timer && typeof timer.unref === 'function') timer.unref()
+      })
+    ]).then((v) => { clearTimeout(timer); return v === true }, () => { clearTimeout(timer); return false })
+    // ⚠ The latch must name the promise the CALLERS were handed, not the one it was derived
+    // from. Comparing against `bounded` here can never be true, so the latch would never
+    // clear and every later refresh would be answered with the FIRST one's settled verdict —
+    // the events lineup frozen at whatever the cold replica said in the first second after
+    // login, silently and for the life of the process. (Measured: exactly that.)
+    const p = bounded.then((v) => { if (this._eventsRefresh === p) this._eventsRefresh = null; return v })
+    this._eventsRefresh = p
+    return p
+  }
+
+  async _doRefreshEvents () {
+    // ⚠ THE NO-COST GATE, and it is first for a reason. `eventSources` is written only when
+    // a bouquet reaches an EPHEMERAL source, so on today's production — where nothing is
+    // ephemeral — no user record has it, this returns here, and the engine never reads
+    // meta/eventsKey, never opens a drive, never joins a topic. The absent-drive path is
+    // therefore not merely harmless: it never happens.
+    const want = this._eventSources
+    // ⚠ STAMPED BEFORE ANY READ IS ISSUED, exactly like the pointer's `want` capture. This
+    // says "an attempt was made FOR this ACL", which is what lets the forced chain in
+    // _refreshEvents stop after one hop even when the attempt then fails — and what stops it
+    // spinning forever against a drive that is simply unreadable. `_eventsAclKey`, set only
+    // on a successful read, keeps its separate job: defeating the rev short-circuit so the
+    // next periodic tick retries.
+    const aclKey = this._eventsAclNow()
+    this._eventsAclAttempted = aclKey
+    if (!want.length) {
+      // …but a viewer who LOST every event source must still lose the channels. The merge
+      // filters by this list live (see _eventEntries), so the drop needs no read — only a
+      // push, which is what a `true` asks the caller for. Reported ONCE, off the recorded ACL
+      // rather than off the cache, so an engine that has simply never had an event source
+      // (production today) answers false here for ever and pushes nothing.
+      const changed = this._eventsAclKey !== ''
+      this._eventsAclKey = ''
+      this._eventsRev = -1
+      return changed
+    }
+    const who = this._username
+    const gen = this._epoch
+    const seq = ++this._eventsSeq
+    await this._openEvents()
+    const drive = this._eventsDrive
+    if (!drive) return false // no pointer yet — the source is ephemeral but has not published
+    // ⚠ A COLD REPLICA ANSWERS null WITHOUT WAITING FOR A PEER, which reads as "nothing
+    // published" and, because nothing else here ever advances the core, stays that way for
+    // the life of the process. Exactly the trap _readUpdatesManifest documents and
+    // epg/src/guide.js _refreshEventsMapping hits from the server side. Learn the real
+    // length from a peer first — and only WAIT for one while the replica is genuinely cold:
+    // on a warm core `wait: true` would park until the next append, which would put this
+    // refresh's whole bound into every push that awaits it (see _doPushCatalog).
+    await drive.core.update({ wait: drive.core.length === 0 }).catch(() => {})
+    const buf = await drive.get(EVENTS_INDEX_PATH).catch(() => null)
+    if (!buf) return false // cold replica with no peer yet — keep what we have and retry later
+    let idx
+    try { idx = JSON.parse(b4a.toString(buf)) } catch { return false } // written only by the panel
+    if (!idx || !Array.isArray(idx.sources)) return false
+    // The cheap steady state: `rev` is global and monotonic, so an index whose rev has not
+    // moved names byte-identical shards. Re-checked against the ACL because a bouquet change
+    // must re-read at an unchanged rev.
+    if (Number.isInteger(idx.rev) && idx.rev === this._eventsRev && aclKey === this._eventsAclKey) return false
+    const next = new Map()
+    let complete = true
+    for (const s of idx.sources) {
+      if (!s || typeof s.name !== 'string' || typeof s.shard !== 'string') continue
+      const prev = this._eventShards.get(s.name)
+      // THE ACL, and it is a FETCH gate: a shard this viewer is not entitled to is never
+      // asked for. Not a cryptographic boundary — the drive carries no encryption key and
+      // every shard is plaintext to anyone holding the pointer — so what it protects is
+      // bandwidth and the operator's bouquet, not secrecy.
+      //
+      // What we ALREADY hold for a de-entitled source is kept rather than dropped. It is
+      // never rendered (_eventEntries filters by the ACL on every merge, so a revoked bouquet
+      // leaves the lineup on the very next push with no read at all), and keeping it makes
+      // re-granting instant instead of a refetch. Dropping it would also imply the cache was
+      // the entitlement, which it is not.
+      if (!want.includes(s.name)) { if (prev) next.set(s.name, prev); continue }
+      // ⚠ NEVER DERIVE THIS PATH. The revision rides in the FILENAME and only a source that
+      // CHANGED gets a new one, so `shard` is read from the index and compared as a whole:
+      // an unchanged path is an unchanged file and needs no fetch at all.
+      //
+      // …AND THAT HOLDS ACROSS AN EPOCH TOO, which is what makes a rotation nearly free for
+      // a warm viewer. `rev` is monotonic ACROSS epochs (_mintEpoch carries it forward) and a
+      // rotation COPIES the tree verbatim, so one path names one set of bytes for the life of
+      // the deployment. Re-fetching after a swap would not merely waste the transfer: the
+      // copied blocks sit at the START of the new epoch's blob core and the writer clears the
+      // superseded ones around them within a sync or two, and a read for a block behind one
+      // of those holes was MEASURED parking past every bound. So the swap re-reads the INDEX
+      // — which is what makes the viewer follow the new drive at all — and keeps the shards.
+      if (prev && prev.shard === s.shard) { next.set(s.name, prev); continue }
+      const sbuf = await drive.get(s.shard).catch(() => null)
+      let list = null
+      if (sbuf) { try { list = JSON.parse(b4a.toString(sbuf)) } catch { list = null } }
+      if (!Array.isArray(list)) {
+        // A shard that is missing, unreadable or malformed costs THAT SOURCE its freshness
+        // and nothing else: the last good copy stays in the lineup and every other source
+        // still lands. Taking the lineup down over one bad file is the failure this guards.
+        complete = false
+        if (prev) next.set(s.name, prev)
+        continue
+      }
+      const entries = list.filter((e) => e && typeof e.id === 'string' && e.id !== '')
+      // `count` is CHECKED rather than read-and-ignored. The panel writes the shard and then
+      // the index naming it, from the one array, at an immutable path — so the pair cannot
+      // disagree without the bytes being wrong, and a disagreement is the one thing that
+      // distinguishes a torn read from a small lineup. Treated like any other unusable
+      // shard: keep the last good copy, do not anchor the rev, retry.
+      //
+      // Against the RAW array, not the filtered one: `count` is what the panel published,
+      // and every entry it published is well-formed. The id filter above is a separate,
+      // softer defence against junk INSIDE an otherwise-agreeing pair, and conflating the
+      // two would make one bad element condemn the whole shard.
+      if (Number.isInteger(s.count) && s.count !== list.length) {
+        complete = false
+        if (prev) next.set(s.name, prev)
+        continue
+      }
+      next.set(s.name, { shard: s.shard, entries })
+    }
+    // A teardown, a corruption purge or a login to another account happened while we read.
+    // Same check _refreshEntitlements makes, for the same reason: this would otherwise write
+    // the previous session's channels into the incoming one's lineup.
+    if (this._epoch !== gen || this._username !== who || seq !== this._eventsSeq) return false
+    const before = this._eventsFingerprint()
+    this._eventShards = next
+    // Anchor the rev ONLY on a complete read. Anchoring a half-read one would short-circuit
+    // every later refresh on a rev whose shards we never got.
+    this._eventsRev = complete && Number.isInteger(idx.rev) ? idx.rev : -1
+    this._eventsAclKey = aclKey
+    return this._eventsFingerprint() !== before
+  }
+
+  // The ACL as a comparable key. One spelling, used by the attempt stamp, the read's own
+  // short-circuit and the staleness test — three places that must not be able to disagree.
+  _eventsAclNow () { return this._eventSources.slice().sort().join(',') }
+
+  // Has a meta/ tick gone unanswered by a pointer read issued after it? See the counters.
+  _eventsPointerStale () { return this._eventsPointerSeen < this._eventsPointerWant }
+
+  // Has the ACL moved since the last refresh that TRIED to read for it? Not since the last
+  // one that succeeded — see the chain in _refreshEvents on why an attempt is the right mark.
+  _eventsAclStale () { return this._eventsAclAttempted !== this._eventsAclNow() }
+
+  // Either signal a forced caller is entitled to a genuinely fresh read for.
+  _eventsStale () { return this._eventsPointerStale() || this._eventsAclStale() }
+
+  // Cheap "did the lineup move" test: shard paths, in ACL order. Two reads that name the
+  // same revisions of the same shards are the same lineup, because a shard's revision
+  // changes exactly when its contents do (panel/src/events.js rule 2).
+  _eventsFingerprint () {
+    let out = ''
+    for (const name of this._eventSources) {
+      const s = this._eventShards.get(name)
+      if (s) out += name + '@' + s.shard + ';'
+    }
+    return out
+  }
+
+  // The events half of the lineup, in ACL order. Filtering HERE rather than at fetch time is
+  // what makes a revoked bouquet take effect on the very next push instead of waiting for a
+  // re-read: the shard may still be cached, but the source is no longer named.
+  * _eventEntries () {
+    for (const name of this._eventSources) {
+      const s = this._eventShards.get(name)
+      if (!s) continue
+      for (const e of s.entries) yield e
+    }
+  }
+
+  // Record that a tune found `catalog/<id>` governing an events id this viewer holds no
+  // grant for, and re-push so the lineup stops offering it. Idempotent — a second refusal
+  // for the same id costs nothing and must not emit again.
+  _shadowEvent (id) {
+    if (this._eventShadowed.has(id)) return
+    this._eventShadowed.add(id)
+    this._pushCatalog().catch(() => {})
+  }
+
+  // One published entry by id, or null. Linear over the entitled shards, which is the same
+  // scan _eventEntries does and is called once per TUNE — not once per channel.
+  _eventById (id) {
+    if (typeof id !== 'string' || !id) return null
+    for (const e of this._eventEntries()) if (e.id === id) return e
+    return null
+  }
+
+  // THE ONE TRIGGER SHAPE, used by all three: the periodic tick, a channel change and a
+  // meta/ pointer flip. Refresh (bounded, single-flight, sticky) and push ONLY if the feed
+  // really moved — the push itself goes through _pushCatalog, which is this file's only
+  // path to 'streams' and its only coalescer, so a burst of triggers still collapses into
+  // one rebuild instead of growing a second mechanism beside it. Fire-and-forget: no
+  // trigger may delay the thing that fired it (a tune least of all).
+  _kickEvents (minAgeMs = 0, force = false) {
+    this._refreshEvents({ minAgeMs, force })
+      .then((changed) => (changed ? this._pushCatalog() : undefined))
+      .catch(() => {})
+  }
+
+  // The periodic tick. Armed once per session by _publishLogin and cleared by stop().
+  // Guarded on the LOGIN rather than on the epoch: a corruption purge bumps the epoch and
+  // keeps the session, so an epoch-captured guard would silently retire this timer for the
+  // life of the process. Unref'd — a refresh tick must never hold a worklet open.
+  _startEventsRefresh () {
+    if (this._eventsTimer || !(this._eventsRefreshMs > 0)) return
+    const t = setInterval(() => {
+      if (!this._username || !this._panelBee) return
+      this._kickEvents()
+    }, this._eventsRefreshMs)
+    if (t && typeof t.unref === 'function') t.unref()
+    this._eventsTimer = t
   }
 
   // Open the panel's updates Hyperdrive advertised under meta/updatesKey. The assets

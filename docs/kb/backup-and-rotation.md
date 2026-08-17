@@ -327,6 +327,29 @@ rather than guess: it checks the `meta/eventsKey` record in its own signed
 database, and a pointer with no state file is a hard boot error naming the
 file. If you meet it, put `events-epoch.json` back from the archive.
 
+⚠ **And restore it with the cores it belongs to, never an older copy beside newer
+cores.** The file carries the drive's `rev` counter, and that counter is what names
+every published shard: `/v1/<source>-<rev>.json`. Viewers cache a shard **by its
+path**, and they are right to — the panel only ever writes a given path once, so one
+path means one set of bytes for the life of the deployment (that is what makes an
+epoch rotation nearly free for a warm television: the tree is copied verbatim and the
+paths do not move).
+
+Roll `rev` *backwards* and that stops being true. The next sync republishes different
+content under a path a warm viewer already holds, the viewer sees a path it believes
+it has, skips the fetch, and shows the **old lineup indefinitely** — it will not
+correct on the refresh tick, on a channel change, or on an epoch rotation, because
+nothing it can observe has changed. It corrects only once `rev` climbs back past the
+highest value that was ever published. Nothing detects it and nothing warns.
+
+So a restore of this file is a restore of the whole `DATA_DIR` or nothing. If you
+have already restored an older `events-epoch.json` over newer cores, the repair is to
+push `rev` **above** the highest revision the drive has ever named — read the
+current `/v1/index.json` out of the drive (`rev` is its first field), set the state
+file's `rev` higher, and restart. The panel does this for itself on a clean boot
+(`_loadIndex` raises a recorded `rev` that is below the index's), so the case this
+note covers is specifically a restore that also rolled the *cores* back.
+
 ### Seeing the archives from a dashboard
 
 Each dashboard lists the archives it can see, with their age, and marks the

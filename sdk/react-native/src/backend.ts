@@ -94,6 +94,14 @@ export interface Stream {
   durationSec?: number | null
   /** Catalog status ('live'/'idle'; vod: 'available'/'unavailable' — gray out the latter). */
   status?: string
+  /** The EVENT WINDOW (S57), ISO-8601 UTC. Only on channels the panel publishes through
+   *  its events drive rather than its catalog (an ephemeral sports/PPV event), and only
+   *  when the provider's feed declared one — which most m3u playlists do not. Absent on
+   *  every catalog channel; absent on an event with no declared time, where the honest
+   *  reading is "on now". Everything else about such a channel renders identically to a
+   *  catalog one, which is the point. */
+  startsAt?: string
+  endsAt?: string
 }
 
 // JSON-safe hybrid CDN<->P2P config, passed through to the engine (sdk/player.js).

@@ -32,6 +32,15 @@ export interface Stream {
   durationSec?: number | null
   /** Catalog status ('live'/'idle'; vod: 'available'/'unavailable' — gray out the latter). */
   status?: string
+  /**
+   * The EVENT WINDOW (S57), ISO-8601 UTC. Present only on channels published through the
+   * panel's events drive rather than its catalog — an ephemeral sports/PPV event — and
+   * only when the provider's feed declared one, which most m3u playlists do not. Absent
+   * on every catalog channel, and `undefined` on an event whose feed named no time, in
+   * which case the honest reading is "on now".
+   */
+  startsAt?: string
+  endsAt?: string
 }
 
 /**
@@ -993,6 +1002,14 @@ export interface LoginResult {
   expiresAt: number
   deviceId: string
   tokenVersion: number
+  /**
+   * Ephemeral event sources (S57): the SOURCE names this account may read shards of on the
+   * panel's events Hyperdrive, off the same signed user record `wrapped` came from. Empty
+   * on every deployment with no ephemeral source. An ACL over what a client FETCHES, not a
+   * capability — the drive carries no encryption key and its shards are plaintext to
+   * anyone holding the pointer.
+   */
+  eventSources: string[]
   /**
    * OPT-IN (`remoteSecret: true`) and ABSENT otherwise. The account's remote-control
    * rendezvous secret (hex), one-way from the private key and rotated by the panel's

@@ -111,12 +111,36 @@ function streamPair () {
   return [a, b]
 }
 
+// A Map standing in for the account Hyperbee — with `seq` and `cas`, because the
+// `session` responder DEPENDS on both and a stand-in that drops them does not merely
+// simplify, it inverts the outcome. That responder compare-and-swaps its record write
+// (panel/src/rpc.js), and reads "the cas callback never ran" as "the key did not exist,
+// so this put just RESURRECTED a deleted account" — whereupon it undoes the write and
+// refuses the session. A `put` that silently ignores its options therefore made every
+// doLogin() below answer 'unknown user', which is where this lane died (:180). Same
+// defect, same fix as tools/e2e-analytics-test.mjs; nothing else here models a bee.
+//
+// So: monotonic `seq` per write, and hyperbee's own cas contract — consulted only when
+// the key ALREADY EXISTS (hyperbee's insert path never calls it), and the write lands
+// only if it returns true.
 function fakeDb (seed = {}) {
-  const m = new Map(Object.entries(seed))
+  const m = new Map()
+  let seq = 0
+  for (const [k, value] of Object.entries(seed)) m.set(k, { value, seq: seq++ })
+  const node = (k) => (m.has(k) ? m.get(k) : null)
   return {
-    async get (k) { return m.has(k) ? { value: m.get(k) } : null },
-    async put (k, v) { m.set(k, v) },
-    async del (k) { m.delete(k) },
+    async get (k) { return node(k) },
+    async put (k, v, opts) {
+      const prev = node(k)
+      if (prev && opts && typeof opts.cas === 'function' && !opts.cas(prev, { key: k, value: v, seq: seq + 1 })) return
+      m.set(k, { value: v, seq: ++seq })
+    },
+    async del (k, opts) {
+      const prev = node(k)
+      if (!prev) return
+      if (opts && typeof opts.cas === 'function' && !opts.cas(prev)) return
+      m.delete(k)
+    },
     _map: m
   }
 }
@@ -604,7 +628,11 @@ try {
     // holds the account records, so it is checked structurally, not scanned for
     // needles: no report key, and no report content in any value.)
     for (const [k, v] of db._map) {
-      assert.ok(['user/', 'catalog/', 'meta/'].some((ns) => k.startsWith(ns)), `the bee holds only account/catalog keys — no report namespace (found ${k})`)
+      // `seen/` is the panel's own per-device recency map (panel/src/rpc.js) — account
+      // bookkeeping the session responder writes on every login, and as report-free as the
+      // account record itself. It only becomes visible here now that the bee stand-in
+      // honours `cas` and logins actually succeed.
+      assert.ok(['user/', 'catalog/', 'meta/', 'seen/'].some((ns) => k.startsWith(ns)), `the bee holds only account/catalog keys — no report namespace (found ${k})`)
       assert.ok(!JSON.stringify(v).includes('storm-ch'), `the bee holds no report content (in ${k})`)
     }
 
@@ -1165,7 +1193,11 @@ try {
     )
     // Same structural check as the storm lane: the replicated bee must stay report-free.
     for (const [k, v] of db._map) {
-      assert.ok(['user/', 'catalog/', 'meta/'].some((ns) => k.startsWith(ns)), `the bee holds only account/catalog keys — no report namespace (found ${k})`)
+      // `seen/` is the panel's own per-device recency map (panel/src/rpc.js) — account
+      // bookkeeping the session responder writes on every login, and as report-free as the
+      // account record itself. It only becomes visible here now that the bee stand-in
+      // honours `cas` and logins actually succeed.
+      assert.ok(['user/', 'catalog/', 'meta/', 'seen/'].some((ns) => k.startsWith(ns)), `the bee holds only account/catalog keys — no report namespace (found ${k})`)
       assert.ok(!JSON.stringify(v).includes('scan-ch'), `the bee holds no report content (in ${k})`)
     }
     // The one file that legitimately holds the viewer's own words.

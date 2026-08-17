@@ -24,7 +24,11 @@ export const CATALOG_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const HEX64_RE = /^[0-9a-f]{64}$/
 
 // The exact _display() shape (sdk/player.js), field by field. Anything else is dropped.
-const ENTRY_STRINGS = ['title', 'description', 'poster', 'backdrop', 'logo', 'epgUrl', 'epgId', 'guideBase', 'thumbBase', 'type', 'status']
+// startsAt/endsAt are the event WINDOW an ephemeral channel carries (S57) — ISO-8601
+// strings, absent on every catalog channel. Named here so a warm start paints an events
+// rail the same way the real login does, rather than flashing it windowless and then
+// growing the times a second later.
+const ENTRY_STRINGS = ['title', 'description', 'poster', 'backdrop', 'logo', 'epgUrl', 'epgId', 'guideBase', 'thumbBase', 'type', 'status', 'startsAt', 'endsAt']
 const ENTRY_NUMBERS = ['order', 'durationSec']
 
 function gateEntry (e) {

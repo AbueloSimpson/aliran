@@ -125,6 +125,42 @@ Set `minVersionCode` to make an update mandatory. An installed build
 below that value shows a persistent banner. The viewer cannot dismiss
 it. Playback continues — a mandatory update never blocks the stream.
 
+### "Mandatory" is advisory. It forces nothing.
+
+This is the whole of what `minVersionCode` does, and it is worth stating
+plainly because operators plan around the word:
+
+- It sets a `mandatory: true` flag on the app's `checkUpdate()` result.
+- The app's update banner then renders **without a "Later" button**.
+
+That is all. Nothing gates playback, login, the catalog or the account on
+it. A viewer who ignores the banner, backgrounds the app or never opens
+the screen keeps running the old build indefinitely, and the panel cannot
+make them update.
+
+Two more ways a device can miss it entirely:
+
+- `checkUpdate()` answers `{status: 'unknown'}` when no updates drive is
+  advertised or the manifest does not arrive inside its timeout — a cold
+  replica with no reachable peer. That is "try again later", not an
+  error, and the viewer is shown **nothing at all**.
+- The check is lazy: nothing opens the updates drive until an app calls
+  `checkUpdate()`. A device that is never opened is never told.
+
+**So: never gate an irreversible change on a mandatory update.** If a
+change removes channels from the catalog for older builds — as switching
+ephemeral event sources onto the events drive does — the only sound input
+is a measurement of what the fleet is actually running:
+
+```
+node src/admin-cli.js app-versions
+```
+
+It counts *enrolled devices*, so the television that has been off for a
+month is in the number, and it reports `(unknown)` for every device on a
+build too old to report at all. See
+[reference.md](reference.md#app-versions-appverusername).
+
 ## Rules and warnings
 
 - **Never upload an internal or development build.** The updates drive

@@ -1364,12 +1364,27 @@ async function applyFeed (ctx, name, mapped) {
   }
   if (gone.length) report.removed = (await deleteStreams(ctx, gone)).ok.length
 
+  // ⚠ THE OTHER HALF OF applyEphemeral's CONFLICT RULE, and it was missing. applyEphemeral
+  // refuses to publish an id the CATALOG already holds; nothing refused the mirror image, so
+  // an ordinary source importing an id an EPHEMERAL source already publishes wrote a catalog
+  // record on top of a published shard entry — silently, since a catalog scan cannot see the
+  // drive. That collision is not cosmetic on the client: it is the exact state in which an
+  // events-only entitlement met a catalog record it holds no grant for (sdk/player.js
+  // _resolveStream now refuses it outright, and this is why it should never have to).
+  // INCUMBENT WINS, the same rule both sides already follow — the source already publishing
+  // the id keeps it, and the newcomer is reported as a conflict like any other.
+  const publishedElsewhere = new Set()
+  if (ctx.events && ctx.events.enabled) {
+    for (const [id, e] of ctx.events.snapshot()) if (!e || e.source !== name) publishedElsewhere.add(id)
+  }
+
   const secrets = loadSecrets(ctx.dataDir)
   let secretsDirty = false
   const puts = []
   for (const [id, m] of mapped.entries) {
     const cur = current.get(id)
     if (cur && cur.source !== name) { report.conflicts.push(id); continue } // manual or foreign channel — never touched
+    if (publishedElsewhere.has(id)) { report.conflicts.push(id); continue } // an ephemeral source is already publishing it
     if (!cur) {
       // ⚠ MINTS UNCONDITIONALLY, like addStream. An id with no catalog record has no
       // grants either (deleteStreams strips them before it deletes the record), so there

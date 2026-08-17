@@ -285,6 +285,19 @@ export function userSummary (username, u) {
 export async function addStream (ctx, id, opts = {}) {
   checkName(id, 'stream id')
   if (await ctx.db.get('catalog/' + id)) exists(`stream "${id}" already exists (use set-meta to edit)`)
+  // …and the half a catalog lookup cannot see (S57). An EPHEMERAL source's channels are not
+  // in the bee at all, so without this an operator could add a manual channel on top of one
+  // the events drive is publishing — the same id governed from two places, which is exactly
+  // the state a viewer entitled through `eventSources` (and holding no grant for the new
+  // record) meets as an entitlement crossing. sources.js applyEphemeral already refuses the
+  // opposite direction; this is the mirror, and the message names the source so an operator
+  // can act on it rather than guess.
+  if (ctx.events && ctx.events.enabled) {
+    const published = ctx.events.snapshot().get(id)
+    if (published) {
+      exists(`stream "${id}" is already published by the ephemeral source "${published.source || '(unknown)'}" — pick another id, or take that source off ephemeral first`)
+    }
+  }
   if (opts.key != null && !/^[0-9a-f]{64}$/i.test(opts.key)) bad('key must be 32 bytes hex')
   const url = opts.url != null ? normRedirectUrl(opts.url) : null
   if (opts.redirect != null && normBool(opts.redirect) !== !!url) bad("redirect must match url — pass an https 'url' to create a redirect channel")
