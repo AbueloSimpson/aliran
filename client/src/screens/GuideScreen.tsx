@@ -48,8 +48,12 @@
 // overlay up — see LiveScreen), and OK on the ALREADY-PLAYING row of Live TV's
 // channel list (previously a no-op re-tune — see ChannelListPanel.onGuide). Tuning
 // navigates back to Live with the picked channel; Live honors the fresh param.
-// Guide-less channels show one honest full-width "No program information" cell
-// (D2 — no fake data), and vod titles have no schedule, so they stay out entirely.
+// Guide-less channels spend that empty full-width cell on what IS known about them —
+// the station's full name and the channel list's LIVE badge, over the honest "no
+// program information" note (D2 — never fake a program). That is the surface the
+// rotating EVENT channels are read on: they carry no EPG, so the title is the
+// schedule. Off-air channels dim, list-style, whether they have a guide or not. vod
+// titles have no schedule at all, so they stay out of the grid entirely.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, FlatList, StyleSheet, BackHandler, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -468,6 +472,12 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
   useEffect(() => { onPrograms(stream.id, programs) }, [stream.id, programs, onPrograms])
 
+  // OFF AIR, in the channel list's own grammar: dimmed, and the LIVE badge withheld.
+  // `isLive` is the panel's liveness truth — the redirect prober flips it false on a
+  // url that has been dead for N sweeps and back on the first success (panel
+  // liveness.js), which is exactly the state an event channel lands in between events.
+  const offAir = stream.isLive === false
+
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
   // The focus highlight: the exact cell the reducer named; if the focus position
   // fell in a schedule gap, light the first visible cell so the row's focus is
@@ -496,15 +506,32 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
           above. */}
       <View style={[styles.chCell, rowFocused && styles.chCellFocused]}>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
+          ? <Image source={{ uri: stream.logo }} style={[styles.chLogo, offAir && styles.dimmed]} resizeMode="contain" accessibilityLabel={title} />
           : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{title}</Text>
+        <Text style={[styles.chName, rowFocused && styles.chNameFocused, offAir && styles.dimmed]} numberOfLines={2}>{title}</Text>
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
           ? (
-            <View style={[styles.cell, styles.cellAtStart, { width: stripW }, rowFocused && styles.cellFocused]}>
-              <Text style={[styles.cellTitle, styles.cellEmpty, rowFocused && styles.cellTitleFocused]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
+            <View style={[styles.cell, styles.cellAtStart, styles.emptyCell, { width: stripW }, rowFocused && styles.cellFocused]}>
+              {/* THE STATION'S FULL NAME AND WHETHER IT IS ON AIR — because on a
+                  guide-less row this cell is the only place either can be read, and
+                  the row where that matters most is the one this whole cell exists
+                  for: the rotating EVENT channels, whose "schedule" is the title
+                  itself ("Yankees vs Red Sox") and which carry no EPG at all. The
+                  channel column beside it is IDENTITY at a glance — a logo and as
+                  much of the name as ~100dp of a 2-line box holds — and an event
+                  name is routinely longer than that. Here the whole 2-hour strip is
+                  free, so the name is shown whole, in the channel list's own
+                  vocabulary (LIVE pill, dimmed when off air). The honest "no
+                  schedule" answer (D2 — never fake a program) keeps its line
+                  underneath; it is now the smaller half of the cell, which is the
+                  right weight for the least useful thing in it. */}
+              <View style={styles.emptyLine}>
+                <Text style={[styles.cellTitle, rowFocused && styles.cellTitleFocused, offAir && styles.dimmed]} numberOfLines={1}>{title}</Text>
+                {stream.isLive && <Text style={styles.live}>{t('common.live')}</Text>}
+              </View>
+              <Text style={[styles.cellEmpty, rowFocused && styles.cellEmptyFocused]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
             </View>
             )
           : visible.map((p) => {
@@ -602,6 +629,24 @@ const styles = StyleSheet.create({
   cellTitleFocused: { color: theme.colors.focusFillText },
   cellTimeFocused: { color: theme.colors.focusFillText, opacity: 0.7 },
   cellPast: { opacity: 0.5 },
-  cellEmpty: { color: theme.colors.textDim, fontStyle: 'italic', fontWeight: '400' },
+  // The guide-less cell's two lines: the station's full name (+ LIVE pill) over the
+  // honest "no schedule" note, which drops to caption here — it is the footnote now,
+  // not the whole cell.
+  //
+  // THE ROW HEIGHT DOES NOT MOVE FOR THIS (getItemLayout and the styles must agree
+  // exactly), so the two lines have to fit ROW_INNER_H — 41dp at the operator's 0.66
+  // ramp. A label line and a caption line come to ~30dp at a 1.4 line box, which the
+  // cell's ordinary 6dp padding leaves ~1dp short of; 4dp gives it room to spare
+  // rather than trusting a font metric.
+  emptyCell: { paddingVertical: 4 },
+  emptyLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cellEmpty: { color: theme.colors.textDim, fontSize: theme.type.caption, fontStyle: 'italic', marginTop: 2 },
+  cellEmptyFocused: { color: theme.colors.focusFillText, opacity: 0.7 },
+  // ChannelRow's LIVE badge vocabulary (filled pill), at plain `caption` rather than
+  // the `caption - 2` those sites use: this cell has width to spare, and the ramp's
+  // post-rounding subtractions already put the list's badges at 7dp (theme.ts). No new
+  // site should be added below the type floor.
+  live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption, fontWeight: '800', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
+  dimmed: { opacity: 0.5 },
   cellHairline: { position: 'absolute', left: 8, right: 8, bottom: 4 }
 })

@@ -229,7 +229,19 @@ export function SearchPanel ({ playingId, onTune }: SearchPanelProps) {
               keyboardShouldPersistTaps="handled"
               initialNumToRender={columns * 4}
               windowSize={5}
-              removeClippedSubviews
+              // …BUT NOT CLIPPING, ON A TELEVISION. removeClippedSubviews does not
+              // change what is MOUNTED (windowSize decides that) — it DETACHES the
+              // mounted cards that are off-screen from the native view tree, and on
+              // Android a detached view is also out of FOCUS SEARCH. These cards are
+              // focusables, so a DOWN press on the last visible row finds nothing
+              // below it and focus wraps back to the top of the results, taking the
+              // scroll with it — the channel list's "it goes down four or five
+              // channels and jumps back up". The panel is still phone-gated in
+              // LiveScreen (TV keeps its own SearchScreen), so the flag costs nothing
+              // either way today; it is here so the D-pad readiness this file's header
+              // promises is real on the day TV adopts the panel. Phone keeps the flag:
+              // touch has no focus to lose.
+              removeClippedSubviews={!theme.isTV}
               renderItem={({ item }) => (
                 <ChannelCard
                   stream={item}

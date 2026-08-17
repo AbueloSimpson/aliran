@@ -125,12 +125,24 @@ const RailItem = React.memo(RailItemInner)
 // Phone metrics one notch tighter (~15%, S22 round 3 — the side panel read too
 // large); TV keeps the 10-foot values untouched.
 const styles = StyleSheet.create({
-  rail: { flexGrow: 0 },
-  scroll: { flexGrow: 0 },
+  // BOUNDED BY THE PANE, NOT BY THE CONTENT — and this is the whole of the overflow
+  // fix. Both were `flexGrow: 0`, and RN defaults flexShrink to 0 as well, so the rail
+  // laid out at its CONTENT height and nothing stopped it growing past the bottom of
+  // its own rounded panel: a parent with more sub-categories than fit (Nacional, on the
+  // operator's lineup) drew its last items over the video, outside the furniture. The
+  // ScrollView could not save it, because a ScrollView only scrolls when a parent
+  // BOUNDS its height — at content height there was no overflow to scroll, so the
+  // spill WAS the scrolling. `flex: 1` (grow and shrink) hands it the pane's height
+  // instead: the list stays inside the panel and the D-pad scrolls it there.
+  rail: { flex: 1 },
+  scroll: { flex: 1 },
   // Curved-display phones (S22 Ultra) have a touch dead zone along the bottom edge:
   // without this, the rail's last item scrolls flush to the glass curve and cannot be
   // tapped. The pad lets the list scroll one item-height past the end, clear of it.
-  scrollContent: { paddingBottom: theme.spacing(6) },
+  // A television has neither the curve nor the touch, and now that the rail really
+  // scrolls there, a screenful of blank under the last category is only further for the
+  // D-pad to travel — so TV gets ordinary end padding.
+  scrollContent: { paddingBottom: theme.isTV ? theme.spacing(1) : theme.spacing(6) },
   // TV paddings ride the scale ramp with everything else (theme.ts SCALE).
   back: { borderRadius: 999, paddingVertical: theme.isTV ? theme.px(8) : 6, paddingHorizontal: theme.isTV ? theme.px(14) : 7, marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },

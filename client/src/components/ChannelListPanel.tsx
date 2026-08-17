@@ -3,11 +3,16 @@
 // row switches the stream IN PLACE (playback never stops). There is no manual close
 // control — the overlay auto-hides after inactivity (LiveScreen's idle timer); any row
 // focus or scroll here bumps that timer via onActivity.
-import React, { useRef, useEffect, useMemo, useCallback } from 'react'
+//
+// On a television the remote's CHANNEL UP/DOWN keys page this list a screenful at a
+// time (the guide grid's gesture, on the surface the viewer actually browses) — see the
+// pager below. The D-pad still walks it one row at a time.
+import React, { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { View, Text, FlatList, StyleSheet, type ListRenderItem } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
 import { ChannelRow, CHANNEL_ROW_H } from './ChannelRow'
+import { onChannelKey } from '../channelKeys'
 import { theme } from '../theme'
 
 // Hoisted: closes over nothing but the module-scope row height, and FlatList treats a
@@ -70,6 +75,66 @@ function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorite
     return () => clearTimeout(timer)
     // Only on open / when the playing channel changes — not on every catalog push.
   }, [playingIndex])
+  // WHERE THE D-PAD IS, so the CHANNEL keys below can page FROM it: the rows report
+  // their own index as they take focus. Reset when the panel RE-SCOPES — an index into
+  // the old category means nothing in the new one. The panel is never told the category
+  // key, but `heading` IS that path, and it changes exactly when the scope does (a
+  // catalog push, which replaces `streams` without re-scoping, must not clear it).
+  const focusedIndexRef = useRef(-1)
+  useEffect(() => { focusedIndexRef.current = -1 }, [heading])
+  const handleRowFocus = useCallback((index: number) => {
+    focusedIndexRef.current = index
+    onActivity?.()
+  }, [onActivity])
+
+  // CHANNEL UP/DOWN page this list a screenful at a time — the guide's answer to "I do
+  // not want to walk 200 channels one press at a time" (GuideScreen's own pageRef),
+  // brought to the surface the viewer actually browses on. The keys arrive from the
+  // Activity (channelKeys.ts) because the D-pad rig cannot see them: they move focus
+  // nowhere. LiveScreen's own handler stands down while any panel is up, so these two
+  // subscriptions never both answer a press.
+  //
+  // A page is MEASURED, not assumed: the row height rides the theme ramp and the panel's
+  // height is whatever the overlay leaves. One row of overlap, so the viewer can see
+  // where they came from.
+  const pageRef = useRef(5)
+  const measurePage = useCallback((height: number) => {
+    pageRef.current = Math.max(1, Math.floor(height / CHANNEL_ROW_H) - 1)
+  }, [])
+  // The paged-to row, handed the ref that asks for native focus once it has rendered.
+  // State, not a ref, because renderItem has to put the handle ON that row; cleared as
+  // soon as the focus lands, so a later re-mount of the same row cannot re-fire it.
+  const [pageTarget, setPageTarget] = useState<number | null>(null)
+  const pageRowRef = useRef<any>(null)
+  useEffect(() => {
+    if (pageTarget == null) return
+    // A page lands well inside the mounted window, so the row is normally there on the
+    // first tick; the retries cover a jump that outran virtualization (the row mounts a
+    // frame or two later), and giving up leaves the list scrolled — never wedged.
+    let tries = 0
+    let timer = setTimeout(function tick () {
+      const row = pageRowRef.current
+      if (row?.requestTVFocus) { row.requestTVFocus(); setPageTarget(null); return }
+      if (++tries > 3) { setPageTarget(null); return }
+      timer = setTimeout(tick, 40)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [pageTarget])
+  useEffect(() => onChannelKey((direction) => {
+    if (!streams.length) return
+    // Nothing focused yet (the panel just opened, or the rail still holds the focus):
+    // page from the channel being watched, which is where the list is parked.
+    const from = focusedIndexRef.current >= 0 && focusedIndexRef.current < streams.length
+      ? focusedIndexRef.current
+      : Math.max(playingIndex, 0)
+    const step = direction === 'up' ? -pageRef.current : pageRef.current
+    const target = Math.min(Math.max(from + step, 0), streams.length - 1)
+    if (target === from) return
+    onActivity?.()
+    try { listRef.current?.scrollToIndex({ index: target, animated: false, viewPosition: 0.35 }) } catch {}
+    setPageTarget(target)
+  }), [streams, playingIndex, onActivity])
+
   // Two-tier OK (WS3) as ONE stable handler: the row hands its stream back, and the
   // playing-row → guide dispatch happens here instead of inside a per-row closure.
   // Rows therefore share this single function and their memo holds across renders.
@@ -80,6 +145,7 @@ function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorite
   const renderItem: ListRenderItem<Stream> = useCallback(({ item, index }) => (
     <ChannelRow
       stream={item}
+      index={index}
       number={numbers.get(item.id)}
       playing={item.id === playingId}
       favorite={favSet.has(item.id)}
@@ -92,37 +158,58 @@ function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorite
       // always contains the playing row; when it doesn't, the rail keeps focus —
       // acceptable, and far better than stealing it mid-walk.
       hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
-      innerRef={item.id === playingId ? playingRowRef : undefined}
-      onFocus={onActivity}
+      // The PAGE TARGET wins the handle: a CHANNEL-key jump has to be able to land on
+      // the playing row too, and it is the transient one — the playing row's own effect
+      // fires on open, long before any page.
+      innerRef={index === pageTarget ? pageRowRef : item.id === playingId ? playingRowRef : undefined}
+      onFocus={handleRowFocus}
       onPressStream={handlePress}
       onLongPressStream={onInfo}
     />
-  ), [numbers, playingId, favSet, onActivity, handlePress, onInfo])
+  ), [numbers, playingId, favSet, pageTarget, handleRowFocus, handlePress, onInfo])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
-      <FlatList
-        ref={listRef}
-        data={streams}
-        keyExtractor={(s) => s.id}
-        getItemLayout={getItemLayout}
-        initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
-        onScrollBeginDrag={onActivity}
-        // THE MOUNTED-WINDOW DISCIPLINE, and this list needed it most of all. Every
-        // ChannelRow runs its own EPG fetch (useEpg, for the now-playing subline), so
-        // each mounted row is a request — and at FlatList's defaults a lineup of ~900
-        // channels mounted enough of them at once that opening this panel was visibly
-        // slower than the guide, which has carried these three props from the start.
-        // Keep the numbers here and the guide's in step: same rows, same cost.
-        windowSize={5}
-        initialNumToRender={12}
-        removeClippedSubviews
-        onScrollToIndexFailed={(info) => {
-          listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
-          setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
-        }}
-        renderItem={renderItem}
-      />
+      {/* The list's own box, and the thing a "screenful" is measured against — the
+          guide grid's `body` idiom (GuideScreen), for the same reason: what is left
+          under the heading is not a number this file can know. */}
+      <View style={styles.listBox} onLayout={(e) => measurePage(e.nativeEvent.layout.height)}>
+        <FlatList
+          ref={listRef}
+          data={streams}
+          keyExtractor={(s) => s.id}
+          getItemLayout={getItemLayout}
+          initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
+          onScrollBeginDrag={onActivity}
+          // THE MOUNTED-WINDOW DISCIPLINE, and this list needed it most of all. Every
+          // ChannelRow runs its own EPG fetch (useEpg, for the now-playing subline), so
+          // each mounted row is a request — and at FlatList's defaults a lineup of ~900
+          // channels mounted enough of them at once that opening this panel was visibly
+          // slower than the guide, which has carried these three props from the start.
+          // Keep the numbers here and the guide's in step: same rows, same cost.
+          windowSize={5}
+          initialNumToRender={12}
+          // …BUT NOT CLIPPING, ON A TELEVISION. removeClippedSubviews does not change
+          // what is MOUNTED (windowSize decides that, and with it the EPG cost above) —
+          // it DETACHES the mounted rows that are off-screen from the native view tree.
+          // On Android that also takes them out of focus search, and this list's rows are
+          // the focusables: pressing DOWN on the last visible row found nothing below it,
+          // because the next row was mounted but detached, so focus wrapped back to the
+          // top of the list and the panel scrolled up with it — the operator's "it goes
+          // down four or five channels and jumps back up". Holding the key made it
+          // certain, since a smooth scroll is still in flight when the next press
+          // arrives; pressing slowly gave Android time to scroll, re-attach and find the
+          // row, which is why it "worked slower". The guide's grid keeps the flag because
+          // its rows hold nothing focusable at all (virtual focus). Phone keeps it too:
+          // touch has no focus to lose.
+          removeClippedSubviews={!theme.isTV}
+          onScrollToIndexFailed={(info) => {
+            listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
+            setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
+          }}
+          renderItem={renderItem}
+        />
+      </View>
       <Text style={styles.hint}>{t('live.holdForDetails')}</Text>
     </View>
   )
@@ -137,5 +224,8 @@ export const ChannelListPanel = React.memo(ChannelListPanelInner)
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: theme.colors.overlay, borderTopRightRadius: 12, borderBottomRightRadius: 12, paddingVertical: theme.spacing(1), paddingHorizontal: theme.spacing(1) },
   header: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 2, marginBottom: theme.spacing(1), marginLeft: theme.spacing(1) },
+  // Takes everything the heading and the hint leave; the FlatList inside fills it (a
+  // scroll view grows and shrinks by default), so the geometry is what it always was.
+  listBox: { flex: 1 },
   hint: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, marginTop: 4, marginLeft: theme.spacing(1), opacity: 0.7 }
 })

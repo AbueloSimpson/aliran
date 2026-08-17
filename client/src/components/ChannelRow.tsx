@@ -39,7 +39,14 @@ export interface ChannelRowProps {
   playing?: boolean
   favorite?: boolean
   hasTVPreferredFocus?: boolean
-  onFocus?: () => void
+  /** This row's position in its list. Handed back by onFocus so a host can act from
+   *  where the D-pad actually IS — ChannelListPanel pages the CHANNEL keys from it.
+   *  Absent (the plain list screens) reports -1, which those hosts ignore. */
+  index?: number
+  /** Fired when the row takes focus, carrying its own index. Hosts that only want the
+   *  "something happened" signal (the auto-hide timers) can keep passing a 0-arg
+   *  function — the argument is theirs to ignore. */
+  onFocus?: (index: number) => void
   /** Handle on the row's Pressable, so a host can place native focus on it directly
    *  (ChannelListPanel does, for the channel being watched). The NowPill's pattern. */
   innerRef?: React.RefObject<any>
@@ -50,7 +57,7 @@ export interface ChannelRowProps {
   onLongPressStream?: (s: Stream) => void
 }
 
-function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPressStream, onLongPressStream }: ChannelRowProps) {
+function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFocus, index = -1, innerRef, onFocus, onPressStream, onLongPressStream }: ChannelRowProps) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
@@ -81,7 +88,7 @@ function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFoc
       ]}
       ref={innerRef}
       hasTVPreferredFocus={hasTVPreferredFocus}
-      onFocus={() => { setFocused(true); onFocus?.() }}
+      onFocus={() => { setFocused(true); onFocus?.(index) }}
       onBlur={() => setFocused(false)}
       onPress={() => onPressStream(stream)}
       onLongPress={onLongPressStream ? () => onLongPressStream(stream) : undefined}
