@@ -478,6 +478,35 @@ an item that carries one is telling you exactly which claim is still on paper.
   that) also shows the name, with a present-tense LIVE badge in a cell that may be a day
   away. The television guide does the same; both are worth a second look together.
 
+- **Every live database watch in the tree went permanently deaf if the panel's database was
+  ever forked, and stayed deaf until the process was restarted.** Reclaiming the space a
+  churned Hyperbee has leaked means rebuilding it and installing the rebuilt core at fork+1,
+  so every replica reorgs onto it — a hypercore *truncate*. hyperbee's watcher does not
+  survive one. It looks as though it should: `Watcher._next()` compares
+  `current.core.fork` against `previous.core.fork`. That guard cannot fire, because hypercore
+  reads `fork` live off the shared core rather than off the snapshot, so two sessions over
+  one core always report the same new number and the comparison is a value against itself.
+  What happens instead is one of two things, decided by a race: the iterator throws
+  `SNAPSHOT_NOT_AVAILABLE`, or it parks silently for ever — waiting for the log to pass a
+  version captured before the truncate, which on the production panel means ~70,137 blocks
+  against a rebuilt core of ~2,731. Re-growing the log 1,006 appends past its pre-fork length
+  did not wake it. A `while (!closed)` re-arm wrapper — which the repeater and the guide
+  already had, and which is the obvious fix — repairs only the throwing face; the parked one
+  never leaves the loop, so the wrapper never runs again. All six range watches (the viewer's
+  live catalog push and grant follow, the repeater's catalog and meta follows, the guide's
+  `epgId` mapping) now go through one helper, `core/bee-watch.js`, which re-creates the
+  watcher on the core's own `truncate` event and re-reads the range once per re-arm so
+  nothing that landed during the reorg is missed. The repeater carries a vendored copy rather
+  than the import, keeping its deliberate "depends on nothing from `@aliran/core`" property.
+  A warm viewer now keeps live catalog push across a compaction instead of needing the app
+  restarted: measured on the fork lane, a catalog edit made after the fork reaches a warm
+  viewer in ~200 ms. Because `_maybeReresolveActiveFeed` rides the catalog loop, this also
+  restores a warm viewer's ability to follow a broadcaster feedKey rotation, which was
+  otherwise lost for the rest of the session. Two smaller faults went with it: the viewer's
+  catalog watch had no retry at all, so a single throw ended it silently, and a read that was
+  merely *in flight* when the reorg landed surfaced to the host as an engine `error` for
+  something the engine had already recovered from.
+
 - **Retiring a channel rewrote every subscriber's whole account record — once per channel —
   and it filled a 24 GB disk.** Adding channels was already batched: one pass over the
   accounts, one write per account, however many channels arrived. Removing them was not.

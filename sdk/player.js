@@ -183,6 +183,11 @@ import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DE
 // graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
 // read gets the engine's INJECTED fs instead. See _tuneSwarmSockets.
 import { tuneSwarm, tuningMessages, DEFAULT_BUFFER_BYTES } from '@aliran/core/net-tune-core.js'
+// Every bee.watch() in this engine goes through here. A raw watcher does not survive a
+// hypercore fork (panel bee compaction installs a rebuilt core at fork+1) — it either throws
+// SNAPSHOT_NOT_AVAILABLE or parks silently forever, and neither face ends on its own. See
+// core/bee-watch.js for why hyperbee's apparent fork guard cannot fire.
+import { watchRange } from '@aliran/core/bee-watch.js'
 
 // Minimal emitter: unlike node:events it exists in both runtimes and never throws on
 // an unhandled 'error' event (SDK errors surface to callers as rejections instead).
@@ -6176,23 +6181,32 @@ export class AliranPlayer extends Emitter {
   // whenever a record changes, so hosts update their UI without polling. Armed with
   // the panel DB (also after a recovery purge re-opens it); emits only once a login
   // has established what the user is entitled to see.
+  //
+  // Armed through watchRange (core/bee-watch.js), which owns two things this used to lack:
+  // a re-arm on a hypercore FORK — without which a panel bee compaction leaves this watch
+  // permanently deaf and _maybeReresolveActiveFeed with it, so a warm viewer also stops
+  // following broadcaster feedKey rotations — and a re-arm on a throw, where a single failure
+  // used to end run() silently with no retry at all.
   _watchCatalog () {
     if (!this._panelBee) return
-    const watcher = this._panelBee.watch({ gt: 'catalog/', lt: 'catalog0' }) // '0' = next char after '/'
-    this._catalogWatcher = watcher
-    const run = async () => {
-      try {
-        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-          if (this._catalogWatcher !== watcher) return // superseded by purge/stop
-          await this._recover(() => this._pushCatalog())
-          await this._maybeReresolveActiveFeed() // follow a rotated feedKey for the stream being watched
-        }
-      } catch (err) {
-        // The bee closing underneath us (stop/purge) ends the watcher — not an error.
-        if (this._catalogWatcher === watcher && !this._purging) this.emit('error', err)
-      }
-    }
-    run()
+    // Close before arming: the handle's own closed flag is what stops its loop, so leaving a
+    // superseded one open would leave TWO watches pushing the catalog on one bee.
+    const prev = this._catalogWatcher; this._catalogWatcher = null
+    if (prev) prev.close().catch(() => {}) // .catch, not try/catch — see _watchGrants
+    this._catalogWatcher = watchRange(this._panelBee, { gt: 'catalog/', lt: 'catalog0' }, async () => { // '0' = next char after '/'
+      await this._recover(() => this._pushCatalog())
+      await this._maybeReresolveActiveFeed() // follow a rotated feedKey for the stream being watched
+    }, {
+      // A push _recover could not rescue is still the host's business — that is what this
+      // catch has always emitted. A purge is tearing the bee down under us on purpose, so it
+      // is not news. Watch-level failures deliberately do NOT come here: see below.
+      onChangeError: (err) => { if (!this._purging) this.emit('error', err) }
+      // No onError. It would carry the SNAPSHOT_NOT_AVAILABLE a fork throws at a read that was
+      // already in flight when the truncate landed — an error the watch has by then re-armed
+      // past. 'error' on this engine is a statement to the HOST that something needs its
+      // attention, and a self-healed reorg is not that; emitting it would put a banner on the
+      // television for a maintenance window the viewer should never notice.
+    })
   }
 
   // Live entitlement refresh (S57): watch this viewer's OWN `user/<name>` record and
@@ -6224,35 +6238,29 @@ export class AliranPlayer extends Emitter {
     // rejection — which is what aborts the Bare worklet (the S22 crash class).
     if (prev) prev.close().catch(() => {}) // re-login/re-arm: never leave two watchers on one bee
     const key = 'user/' + this._username
-    const watcher = this._panelBee.watch({ gte: key, lte: key }) // one record, not a range
-    this._grantWatcher = watcher
-    ;(async () => {
-      try {
-        // Catch up FIRST. A hyperbee watcher only reports appends made after it starts,
+    this._grantWatcher = watchRange(this._panelBee, { gte: key, lte: key }, // one record, not a range
+      () => this._recover(() => this._refreshEntitlements()),
+      {
+        // Catch up on EVERY arm. A hyperbee watcher only reports appends made after it starts,
         // so every arming point has a blind window behind it: a corruption purge rebuilds
-        // the replica from scratch, and a client that was disconnected (backgrounded
-        // phone, dead panel socket) misses whatever landed meanwhile. Usually free at
-        // login: it re-reads the record login() just used, so nothing differs. Not
-        // ALWAYS free — sdk/login.js builds its projection under `if (enc && cat)`, so a
-        // granted id whose catalog record was momentarily unreadable is absent from
-        // _entitled while present in `wrapped`, and this catch-up (and every later one)
-        // re-reads that id's catalog record. That is the intended repair, not waste.
-        //
-        // NOT wrapped in _recover, unlike the loop below. A purge re-runs _openPanel,
-        // which re-arms this watcher, which would catch up again — so recovering HERE
-        // could spin purge→arm→fail→purge on a persistently bad replica. A failed
-        // catch-up is cheap to lose: the next append to the record re-runs it, and real
-        // corruption is still found (and purged) by _watchCatalog and resolve().
-        try { await this._refreshEntitlements() } catch {}
-        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-          if (this._grantWatcher !== watcher) return // superseded by purge/stop/re-login
-          await this._recover(() => this._refreshEntitlements())
-        }
-      } catch (err) {
-        // The bee closing underneath us (stop/purge) ends the watcher — not an error.
-        if (this._grantWatcher === watcher && !this._purging) this.emit('error', err)
-      }
-    })()
+        // the replica from scratch, a fork re-arms mid-reorg, and a client that was
+        // disconnected (backgrounded phone, dead panel socket) misses whatever landed
+        // meanwhile. Usually free at login: it re-reads the record login() just used, so
+        // nothing differs. Not ALWAYS free — sdk/login.js builds its projection under
+        // `if (enc && cat)`, so a granted id whose catalog record was momentarily unreadable
+        // is absent from _entitled while present in `wrapped`, and this catch-up (and every
+        // later one) re-reads that id's catalog record. That is the intended repair, not waste.
+        catchUp: true,
+        // NOT wrapped in _recover, unlike the tick above. A purge re-runs _openPanel, which
+        // re-arms this watcher, which would catch up again — so recovering HERE could spin
+        // purge→arm→fail→purge on a persistently bad replica. A failed catch-up is cheap to
+        // lose: the next append to the record re-runs it, and real corruption is still found
+        // (and purged) by _watchCatalog and resolve().
+        onResync: () => this._refreshEntitlements().catch(() => {}),
+        // Same split as _watchCatalog: a refresh _recover could not rescue reaches the host,
+        // a re-armed-past watch failure does not.
+        onChangeError: (err) => { if (!this._purging) this.emit('error', err) }
+      })
   }
 
   // Re-derive _entitled from the replicated user record and re-emit the display list.
@@ -6811,20 +6819,17 @@ export class AliranPlayer extends Emitter {
     }
   }
 
-  // Follow meta/epgKey rotations live (the catalog watcher's exact re-arm pattern,
-  // bounded to the meta/ prefix — one tiny record, so ticks are rare and cheap).
+  // Follow meta/epgKey rotations live (the catalog watcher's exact arming pattern, bounded to
+  // the meta/ prefix — one tiny record, so ticks are rare and cheap). No onError: a guide
+  // pointer this engine failed to re-read is never worth an 'error' at the host, and
+  // watchRange has already re-armed past whatever it was.
   _watchEpgKey () {
     if (!this._panelBee) return
-    const watcher = this._panelBee.watch({ gt: 'meta/', lt: 'meta0' })
-    this._epgWatcher = watcher
-    ;(async () => {
-      try {
-        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-          if (this._epgWatcher !== watcher) return
-          this._openEpg().catch(() => {})
-        }
-      } catch { /* bee closing under us (shutdown/purge) */ }
-    })()
+    const prev = this._epgWatcher; this._epgWatcher = null
+    if (prev) prev.close().catch(() => {})
+    this._epgWatcher = watchRange(this._panelBee, { gt: 'meta/', lt: 'meta0' }, () => {
+      this._openEpg().catch(() => {}) // fire-and-forget: the guide never delays anything
+    })
   }
 
   // Open the panel's updates Hyperdrive advertised under meta/updatesKey. The assets

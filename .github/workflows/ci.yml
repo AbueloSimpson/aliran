@@ -134,6 +134,14 @@ jobs:
         run: npm run test:session-zero-write
       - name: Client store corruption recovery (test:corrupt)
         run: npm run test:corrupt
+      # Every live bee.watch() in the tree (viewer catalog + grants, repeater catalog +
+      # meta, guide epgId mapping) goes through core/bee-watch.js, because a raw hyperbee
+      # watcher does not survive a hypercore FORK — it either throws SNAPSHOT_NOT_AVAILABLE
+      # or parks silently for ever, and the `while (!closed)` wrapper that looks like the
+      # fix repairs only the throwing face. Forks a real replica by truncating a writer
+      # core: a local duplex pair, no DHT and no swarm — deterministic, seconds.
+      - name: Bee range watch survives a fork (test:bee-watch)
+        run: npm run test:bee-watch
       - name: ffmpeg argument builders (test:args)
         run: npm run test:args
       # How the four bootstrap CLIs take a password: a stray positional is refused (and
