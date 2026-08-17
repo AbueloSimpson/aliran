@@ -739,14 +739,15 @@ try {
   log(`  storage.blocks   ${preStorage.blocks} -> ${postStorage.blocks}${allocVisible ? '' : '   (allocation not observable on this filesystem — reported only)'}`)
   log(`  rollback kept at ${swap.movedLiveTo}`)
 
-  log('\n⚠  ROLLOUT NOTE, from lane 5g: a pre-armed hyperbee RANGE watcher WEDGES across the fork.')
-  log('   hyperbee/index.js:1573 cannot fire because hypercore/index.js:588-590 reads the live fork.')
-  log('   Every bee.watch(<range>) goes deaf at the swap and stays deaf until its process restarts:')
-  log('     sdk/player.js:6181 (catalog fan-out), :6227 (grants), :6818 (meta/)')
-  log('     repeater/src/index.js:196 (catalog), :357 (meta/)')
-  log('     epg/src/guide.js:182 (catalog)')
-  log('   getAndWatch() is unaffected. Plan a restart of the repeaters and the EPG service with')
-  log('   the swap, and expect running clients to need one before they see catalog changes again.')
+  log('\n⚠  ROLLOUT NOTE, from lane 5g: a RAW hyperbee range watcher WEDGES across the fork, and')
+  log('   this lane still proves it — hyperbee/index.js:1573 cannot fire, because')
+  log('   hypercore/index.js:588-590 reads `fork` live off the SHARED core, so a watcher\'s two')
+  log('   snapshots always report the same new number. getAndWatch() is unaffected.')
+  log('   That is why core/bee-watch.js watchRange() exists: it re-arms on the core\'s own')
+  log('   `truncate` event. Every range watch in this repo goes through it, so the panel, the')
+  log('   repeater, the EPG service and the SDK all survive a swap WITHOUT a restart.')
+  log('   Remaining exposure is anything running a build older than that helper — redeploy the')
+  log('   server-side components, and expect viewer apps to need a relaunch until they update.')
 
   log(`\nRESULT: PASS ✅  (${liveKeys} live keys in ${preLength} blocks -> ${db.core.length} at fork ${db.core.fork}; ` +
     `${fmt(preData.size)} -> ${fmt(postData.size)} on disk; warm client reorged with 0 conflicts and its session open; ` +

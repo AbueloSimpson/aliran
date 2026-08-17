@@ -323,15 +323,26 @@ of them is visible:
   yielded. The differ was entered with a `previous` version the truncated tree
   no longer contains, and `next()` never resolved and never rejected.
 
-⚠ **A `while (!this._closed)` re-arm wrapper does not fix this** — the shape
-used by `repeater/src/index.js` and `epg/src/guide.js`. It handles the throwing
-face and does nothing for the silent one, because the loop never exits. The fix
-has to re-create the watcher on the core's `truncate` event. Patched that way in
-a test, a post-fork catalog edit reached a warm viewer in **208 ms**.
+⚠ **A `while (!this._closed)` re-arm wrapper does not fix this.** It handles the
+throwing face and does nothing for the silent one, because the loop never exits.
+The fix has to re-create the watcher on the core's `truncate` event.
 
-Re-growing the log past its pre-fork length does not reliably restore delivery
-either — measured over 1,006 appends. Treat the watcher as dead until the
-process restarts.
+**This is fixed in-tree.** `core/bee-watch.js` `watchRange()` does exactly that,
+and every range watch in the repo now goes through it — the SDK's catalog, grant
+and `meta/` watches, both of the repeater's, and the EPG guide's. A post-fork
+catalog edit reaches a warm viewer in about **200 ms**, and
+`npm run test:bee-watch` pins it. Two details in that helper are load-bearing:
+closing the watcher from the truncate handler also disposes of the throwing face
+(hyperbee registers its own `truncate` handler first, so the iterator ends
+cleanly instead of throwing), and the re-arm must **not** await the change
+callback — a re-arm queued behind a parked `bee.get` is the same deafness one
+layer up.
+
+So the components you run recover on their own. What remains is anything running
+a build older than that helper: **redeploy the EPG service and any repeaters**,
+and expect viewer apps to need a relaunch until they are updated. Re-growing the
+log past its pre-fork length does not rescue an old build — measured over 1,006
+appends.
 
 The blast radius is bounded, and worth stating precisely:
 
@@ -342,17 +353,14 @@ The blast radius is bounded, and worth stating precisely:
   that connects afterwards arms its watcher on the new tree and is fine.
 - It heals on **process restart** — for a television, on the next app launch.
 
-So: everything that watches a range must be restarted after the swap. In this
-repo that is `sdk/player.js` `_watchCatalog` / `_watchGrants` / `_watchEpgKey`,
-`repeater/src/index.js` (both watchers), and `epg/src/guide.js`. Restart the EPG
-service and any repeaters yourself; running viewer apps will not see catalog or
-grant changes until they are relaunched. Schedule the swap accordingly.
-
-`_maybeReresolveActiveFeed` rides the same loop, so a warm viewer also stops
-following broadcaster feedKey rotations — if a feed it is watching rotates
+For a build that predates `watchRange()`, everything that watches a range has to
+be restarted after the swap — `sdk/player.js` `_watchCatalog` / `_watchGrants` /
+`_watchEpgKey`, both of the repeater's, and `epg/src/guide.js`. And
+`_maybeReresolveActiveFeed` rides the same loop, so such a viewer also stops
+following broadcaster feedKey rotations: if a feed it is watching rotates
 afterwards, it keeps replicating the dead one until the viewer re-zaps or
-restarts. That is the sharpest edge of this, and it is the reason to pick a
-quiet hour.
+restarts. That was the sharpest edge of this procedure, and the reason to pick a
+quiet hour. On a current build none of it applies.
 
 What is **not** affected, all measured rather than assumed: the lineup itself
 never truncates (a sweep landing mid-reorg emitted the full list — the client
