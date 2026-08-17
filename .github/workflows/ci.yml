@@ -26,11 +26,13 @@ jobs:
   core:
     name: core (required)
     runs-on: ubuntu-latest
-    # 70 = the sum of the step timeouts below (58) plus headroom for checkout, two npm ci
+    # 95 = the sum of the step timeouts below (82) plus headroom for checkout, two npm ci
     # runs, the ffmpeg install and bundle-backend. Keep it above that sum, or a slow early
     # suite silently cancels the later ones — the same rule the e2e-dht job below states.
-    # This is a CEILING on a hung job, not a target: the lanes finish in about a minute.
-    timeout-minutes: 70
+    # This is a CEILING on a hung job, not a target: the lanes finish in about a minute,
+    # bar the three heaviest (test:panel-compact ~80 s, test:events-client ~40 s,
+    # test:client ~40 s). Re-add this sum whenever a step timeout is added or changed.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -144,6 +146,27 @@ jobs:
       # core: a local duplex pair, no DHT and no swarm — deterministic, seconds.
       - name: Bee range watch survives a fork (test:bee-watch)
         run: npm run test:bee-watch
+      # The acceptance gate for tools/panel-compact.mjs, the offline rebuild that replaces
+      # the panel's signed bee with a compacted core at fork+1 and swaps the core DIRECTORY
+      # in. It ran once against 13.8 GB of production under ~10 live accounts and a fleet of
+      # televisions that could not be rolled back, so nothing in it is taken on trust: it
+      # MEASURES that a same-fork rebuild really does conflict and close every client (the
+      # reason for the +1), that truncate alone reclaims nothing, and that a warm viewer
+      # reorgs with zero conflicts and its session still open. It is also where hyperbee's
+      # fork guard was falsified — the finding test:bee-watch above now covers. LOCAL DHT
+      # testnet, temp dirs, no ffmpeg; ~80 s, most of it seeding 2,700 catalog records and
+      # churning them to a 6:1 dead-block ratio.
+      - name: Panel bee compaction gate (test:panel-compact)
+        timeout-minutes: 8
+        run: npm run test:panel-compact
+      # …and the same fork from the VIEWER's side, which is the question an operator
+      # actually has: a real SDK player (the engine the worklet and the desktop app run)
+      # is held across the swap and must never show a truncated lineup, never re-login,
+      # never lose its live catalog watcher, and still resolve and serve byte-identical
+      # media from a pre-fork entitlement. Local DHT testnet + loopback HTTP.
+      - name: Panel bee compaction, viewer side (test:panel-compact-client)
+        timeout-minutes: 8
+        run: npm run test:panel-compact-client
       - name: ffmpeg argument builders (test:args)
         run: npm run test:args
       # How the four bootstrap CLIs take a password: a stray positional is refused (and
@@ -223,6 +246,20 @@ jobs:
       # ffmpeg — deterministic.
       - name: Ephemeral event channels (test:events)
         run: npm run test:events
+      # The VIEWER half of the same feature, and the half that decides whether the flag can
+      # ever be turned on: the panel's side has been shippable since a201af1 and switched
+      # OFF for exactly one reason — viewers could not read the drive. Drives a real SDK
+      # player against a real replica: catalog ∪ events with the catalog winning a collision,
+      # an events-only entitlement REFUSED at a catalog record it holds no grant for (it once
+      # handed over a premium url, a bearer token and playback past a parental gate), a
+      # per-source ACL proven on the reads actually ISSUED, an epoch swap followed live, and
+      # a real .ts segment served off the drive. Its most load-bearing lane is the one where
+      # nothing happens: with no ephemeral source — the state production is in — the engine
+      # must not read the bee, open a drive or join a topic, and that is asserted as measured
+      # I/O rather than absence of error. LOCAL DHT testnet + ffmpeg; ~40 s.
+      - name: Ephemeral event channels, viewer side (test:events-client)
+        timeout-minutes: 8
+        run: npm run test:events-client
       # Live entitlement (S57): a viewer with the app OPEN follows their own panel-signed
       # `user/<name>` record without re-logging in — a channel cataloged AND granted
       # mid-session becomes playable (url + headers verbatim), and a revoked redirect
