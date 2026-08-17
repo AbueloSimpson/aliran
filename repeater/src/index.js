@@ -64,6 +64,7 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { config } from './config.js'
 import { tuneSwarm, logSwarmTuning } from './net-tune.js'
+import { watchRange } from './bee-watch.js'
 import { initLogging } from './log.js'
 import { startStatusServer } from './status-server.js'
 
@@ -188,24 +189,18 @@ export class Repeater {
 
   // --- catalog follow ---
 
-  // Live re-target on catalog changes (the S1 live-push pattern viewers use), with a
-  // re-arm loop: a bee hiccup must not end the appliance's ability to follow.
+  // Live re-target on catalog changes (the S1 live-push pattern viewers use). watchRange owns
+  // the re-arm: a bee hiccup must not end the appliance's ability to follow, and neither must
+  // a panel bee FORK — which the `while (!this._closed)` loop this replaces could not survive,
+  // because the watcher parks inside the `for await` instead of leaving it (see bee-watch.js).
   _watchCatalog () {
-    const run = async () => {
-      while (!this._closed) {
-        const watcher = this._bee.watch({ gt: 'catalog/', lt: 'catalog0' }) // '0' = next char after '/'
-        this._watcher = watcher
-        try {
-          for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-            if (this._closed || this._watcher !== watcher) return
-            this._scheduleReconcile()
-          }
-        } catch { /* bee closing under us (shutdown) or a transient failure */ }
-        if (this._closed || this._watcher !== watcher) return
-        await this._sleep(5000)
-      }
-    }
-    run().catch(() => {})
+    this._watcher = watchRange(this._bee, { gt: 'catalog/', lt: 'catalog0' }, // '0' = next char after '/'
+      () => { this._scheduleReconcile() },
+      {
+        shouldStop: () => this._closed,
+        sleep: (ms) => this._sleep(ms), // wake-on-shutdown, so a retry never outlives close()
+        onError: (err) => this._log('catalog watch re-armed after: ' + (err?.message || err))
+      })
   }
 
   // Single-flight + dirty flag: a burst of catalog ticks collapses into one pass, and
@@ -347,26 +342,18 @@ export class Repeater {
     this._log(`[${name}] drive mirror dropped (${reason})`)
   }
 
-  // Follow the meta/ pointer records live (the SDK's _watchEpgKey pattern, same
-  // re-arm loop as _watchCatalog). One tiny record per pointer, so ticks are rare;
-  // a tick just marks the reconcile dirty — the single-flight machinery in
-  // _scheduleReconcile is what actually re-reads the pointers.
+  // Follow the meta/ pointer records live (the SDK's _watchEpgKey pattern, armed exactly like
+  // _watchCatalog above). One tiny record per pointer, so ticks are rare; a tick just marks
+  // the reconcile dirty — the single-flight machinery in _scheduleReconcile is what actually
+  // re-reads the pointers.
   _watchMeta () {
-    const run = async () => {
-      while (!this._closed) {
-        const watcher = this._bee.watch({ gt: 'meta/', lt: 'meta0' }) // '0' = next char after '/'
-        this._metaWatcher = watcher
-        try {
-          for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-            if (this._closed || this._metaWatcher !== watcher) return
-            this._scheduleReconcile()
-          }
-        } catch { /* bee closing under us (shutdown) or a transient failure */ }
-        if (this._closed || this._metaWatcher !== watcher) return
-        await this._sleep(5000)
-      }
-    }
-    run().catch(() => {})
+    this._metaWatcher = watchRange(this._bee, { gt: 'meta/', lt: 'meta0' }, // '0' = next char after '/'
+      () => { this._scheduleReconcile() },
+      {
+        shouldStop: () => this._closed,
+        sleep: (ms) => this._sleep(ms),
+        onError: (err) => this._log('meta watch re-armed after: ' + (err?.message || err))
+      })
   }
 
   // --- mirrors ---

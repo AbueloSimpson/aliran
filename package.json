@@ -64,6 +64,7 @@
     "test:corrupt": "node tools/e2e-corrupt-test.mjs",
     "test:sdk": "node tools/e2e-sdk-test.mjs",
     "test:live-entitlement": "node tools/e2e-live-entitlement-test.mjs",
+    "test:bee-watch": "node tools/bee-watch-test.mjs",
     "test:resource": "node tools/e2e-resource-test.mjs",
     "test:vod": "node tools/e2e-vod-test.mjs",
     "test:client": "npm --prefix client test",

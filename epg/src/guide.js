@@ -34,6 +34,7 @@ import b4a from 'b4a'
 import Rache from 'rache'
 import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
+import { watchRange } from '@aliran/core/bee-watch.js'
 
 const HEX64 = /^[0-9a-f]{64}$/i
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -176,22 +177,17 @@ export class GuideManager {
 
   // --- catalog mapping ---
 
+  // watchRange owns the re-arm (core/bee-watch.js): the `while (!this._closed)` loop this
+  // replaces recovered from a THROWING watcher but not from a panel bee FORK, where the
+  // watcher parks inside the `for await` and never leaves it — so one panel compaction used
+  // to freeze this mapping until the guide process was restarted.
   _watchCatalog () {
-    const run = async () => {
-      while (!this._closed) {
-        const watcher = this._bee.watch({ gt: 'catalog/', lt: 'catalog0' })
-        this._watcher = watcher
-        try {
-          for await (const _ of watcher) { // eslint-disable-line no-unused-vars
-            if (this._closed || this._watcher !== watcher) return
-            await this._rebuildMapping().catch(() => {})
-          }
-        } catch { /* bee closing (shutdown) or transient */ }
-        if (this._closed || this._watcher !== watcher) return
-        await new Promise((r) => setTimeout(r, 5000))
-      }
-    }
-    run().catch(() => {})
+    this._watcher = watchRange(this._bee, { gt: 'catalog/', lt: 'catalog0' },
+      () => this._rebuildMapping().catch(() => {}),
+      {
+        shouldStop: () => this._closed,
+        onError: (err) => console.warn('[epg] catalog watch re-armed after:', err?.message || err)
+      })
   }
 
   // Sparse-replica read with a destroy deadline (repeater/src/index.js:209 — a dead
