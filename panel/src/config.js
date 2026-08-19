@@ -172,6 +172,14 @@ export const config = {
     // minutes of a started match reading offline. A stable-channel lineup may want that; a
     // sports lineup does not.
     successesToFlip: int(process.env.LIVENESS_SUCCESSES_TO_FLIP, 1),
+    // WHICH channels the probe may judge. `events` (default) sweeps only the events
+    // drive — the population with no other authority over whether it is live. `all`
+    // also sweeps catalog redirect records, which is what the probe did before this
+    // knob existed; it is opt-in because the panel probes from ONE datacenter address
+    // and the FAST platforms an ordinary lineup is built on refuse exactly that, so
+    // `all` dims channels that play perfectly well for viewers (liveness.js, SCOPE).
+    // Ordinary sources are judged by their own daily rebuild instead.
+    scope: (process.env.LIVENESS_SCOPE || 'events').trim().toLowerCase(),
     bootDelayMs: int(process.env.LIVENESS_BOOT_DELAY_MS, 90000)
   }
 }
@@ -198,6 +206,12 @@ const chkUrl = (name, v) => {
   let u = null
   try { u = new URL(v) } catch {}
   if (!u || !/^https?:$/.test(u.protocol)) problems.push(`${name} must be an http(s) URL (got "${v}")`)
+}
+// A closed set of words. Silently falling back to the default would be the worst
+// outcome here: LIVENESS_SCOPE=events is what an operator types to STOP the probe
+// touching the ordinary lineup, and a typo that quietly means `all` keeps dimming it.
+const chkEnum = (name, v, allowed) => {
+  if (!allowed.includes(v)) problems.push(`${name} must be one of ${allowed.join('/')} (got "${process.env[name]}")`)
 }
 const chkBootstrap = (name, list) => {
   for (const e of list) {
@@ -243,6 +257,7 @@ chkInt('LIVENESS_INTERVAL_MINUTES', config.liveness.intervalMinutes, 0)
 chkInt('LIVENESS_TIMEOUT_MS', config.liveness.timeoutMs, 1000)
 chkInt('LIVENESS_FAILS_TO_FLIP', config.liveness.failsToFlip, 1)
 chkInt('LIVENESS_SUCCESSES_TO_FLIP', config.liveness.successesToFlip, 1)
+chkEnum('LIVENESS_SCOPE', config.liveness.scope, ['events', 'all'])
 chkInt('LIVENESS_BOOT_DELAY_MS', config.liveness.bootDelayMs, 0)
 // A grace window at or past a whole epoch means a drive could be retired before its
 // predecessor's window closed — two live pointers' worth of drive on disk with nothing

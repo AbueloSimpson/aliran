@@ -186,12 +186,15 @@ export async function startPanel () {
   }
 
   // Redirect-channel liveness (src/liveness.js): probes redirect urls and flips
-  // isLive so dead links dim in the viewer's list instead of spinning forever. It reads
-  // BOTH the catalog and the events drive — a drive-sourced event with no probe would
-  // render permanently live, which is the failure that module exists to prevent.
+  // isLive so dead links dim in the viewer's list instead of spinning forever. By
+  // DEFAULT it reads only the events drive — a drive-sourced event with no probe would
+  // render permanently live, which is the failure that module exists to prevent, while
+  // an ordinary source is judged by its own rebuild and probing it from the panel's one
+  // datacenter address dims channels that play fine (liveness.js, SCOPE). LIVENESS_SCOPE=all
+  // restores the old catalog-wide reach.
   const liveness = makeLivenessProber({ config, db, activity, events })
   console.log(config.liveness.intervalMinutes > 0
-    ? `Redirect liveness: probing redirect urls every ${config.liveness.intervalMinutes} min — a url dead ${config.liveness.failsToFlip} sweeps dims (isLive:false), ${config.liveness.successesToFlip === 1 ? 'the first success undims' : `${config.liveness.successesToFlip} consecutive successes undim`}. LIVENESS_INTERVAL_MINUTES=0 disables.`
+    ? `Redirect liveness: probing ${config.liveness.scope === 'all' ? 'the events drive AND catalog redirect urls' : 'the events drive only (LIVENESS_SCOPE=all also probes catalog redirects)'} every ${config.liveness.intervalMinutes} min — a url dead ${config.liveness.failsToFlip} sweeps dims (isLive:false), ${config.liveness.successesToFlip === 1 ? 'the first success undims' : `${config.liveness.successesToFlip} consecutive successes undim`}. LIVENESS_INTERVAL_MINUTES=0 disables.`
     : 'Redirect liveness: DISABLED (LIVENESS_INTERVAL_MINUTES=0) — dead redirect urls stay listed as live.')
 
   // Analytics sampling (S48). Fast tick (5 min): the swarm connection count — every

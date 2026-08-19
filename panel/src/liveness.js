@@ -49,6 +49,42 @@
 // flip is one shard revision (whose superseded bytes are reclaimed), batched so a
 // sweep costs at most one revision per source however many entries moved.
 //
+// SCOPE (`LIVENESS_SCOPE`, default `events`). WHICH channels this module is entitled to
+// judge, and the default is NOT "all of them".
+//
+// This module was written for event playlists and its every decision is calibrated to
+// them — the 10-minute interval, the asymmetric hysteresis, the counter keyed by stream
+// id so a rotating token cannot reset it. Sweeping the ordinary lineup with it was never
+// a decision; it was the catalog scan's reach, and it is actively wrong for two reasons:
+//
+//   - THE PROBE IS NOT A VIEWER, and the difference is the whole verdict. It runs from
+//     the panel — one datacenter IP, no residential ASN, no viewer geo. The FAST
+//     platforms an ordinary lineup is largely made of (Pluto, Samsung TV+, Rakuten,
+//     Plex) refuse exactly that traffic. Measured on the SolTV panel 2026-08-18: ALL 248
+//     Pluto channels were flagged offline — 100%, across all nine country tags — while
+//     the same probe from a residential address answered 200 with a valid playlist for
+//     twelve of eighteen sampled. Those channels play fine for viewers. The panel just
+//     cannot see them, and the self-outage guard below is no help: it counts only
+//     NETWORK-layer failures, and a 403 is an answer.
+//
+//   - NOTHING ASKED IT TO. An ordinary source is rebuilt daily by its own pipeline
+//     (GitHub Actions, for the Atlas feeds), and a channel that died upstream leaves the
+//     feed on the next rebuild — sources.js then removes it. That pipeline probes from
+//     many addresses and judges the whole lineup at once; this module probes from one
+//     and judges channel by channel. The feed is the authority for those channels, and a
+//     second, worse authority contradicting it is the bug, not a safety net.
+//
+// So the sweep is scoped to the population that has no other authority: the events drive,
+// whose channels legitimately 404 between events and are re-stamped hourly. `all` restores
+// the old reach for a deployment whose lineup really is hand-maintained redirects with no
+// rebuilding pipeline behind them — the mechanics below are identical either way, only the
+// target set changes.
+//
+// ⚠ SCOPE DOES NOT UNDIM. Narrowing the scope stops new verdicts; it does not revisit old
+// ones, because `isLive` is a stored field and nothing but a sweep or an admin edit writes
+// it. A deployment that ran `all` and moves to `events` keeps every flag that sweep left
+// behind, forever — those records have to be re-stamped isLive:true deliberately.
+//
 // Writes follow the house rules on both sides: re-read the record immediately
 // before the put, change NOTHING but isLive (`status` is broadcaster/ops vocabulary
 // and stays untouched), put only on an actual flip (bee frugality, S29 — the bee is
@@ -170,6 +206,11 @@ export function makeLivenessProber (ctx, opts = {}) {
   // extra minutes of a started match reading offline to prevent flapping that no longer
   // costs unreclaimable bytes.
   const successesToFlip = opts.successesToFlip ?? c.successesToFlip ?? 1
+  // WHAT this sweep is allowed to judge — see the SCOPE section of the header.
+  // 'events' (the DEFAULT) probes only the events drive; 'all' also probes catalog
+  // redirect records, which is what this module did before the scope existed.
+  const scope = opts.scope ?? c.scope ?? 'events'
+  const probeCatalog = scope === 'all'
   const concurrency = opts.concurrency ?? 4
   const fetchImpl = opts.fetchImpl ?? fetch
   const log = opts.log ?? ((...a) => console.log(...a))
@@ -194,6 +235,12 @@ export function makeLivenessProber (ctx, opts = {}) {
       // Snapshot the targets first; probe from the snapshot so the read stream is
       // not held open across minutes of network waits.
       const targets = []
+      // The catalog scan runs in BOTH scopes, but for different reasons. Under 'all' it
+      // yields probe targets. Under 'events' (the default) it yields only `catalogIds`,
+      // the set the drive half is checked against below — so an id the CATALOG governs is
+      // not probed through its drive shadow either, and an events-scoped sweep touches
+      // nothing outside the events drive by construction rather than by good luck.
+      const catalogIds = new Set()
       for await (const { key, value } of ctx.db.createReadStream({ gt: CATALOG_GT, lt: CATALOG_LT })) {
         if (!value || !value.redirect || !value.url || value.type === 'vod') continue
         // DUAL records (feedKey + redirect url — a broadcaster registered onto a
@@ -202,16 +249,18 @@ export function makeLivenessProber (ctx, opts = {}) {
         // it on an append-only bee forever. The heartbeat owns isLive there; the
         // clash record itself is the admin's to resolve (rpc.js's own note).
         if (value.feedKey) continue
-        targets.push({ id: key.slice(CATALOG_GT.length), url: value.url, headers: value.headers || null, wasLive: value.isLive !== false, drive: false })
+        const id = key.slice(CATALOG_GT.length)
+        catalogIds.add(id)
+        if (!probeCatalog) continue
+        targets.push({ id, url: value.url, headers: value.headers || null, wasLive: value.isLive !== false, drive: false })
       }
       // …and the drive-sourced half (S57). Same predicate, same judgement — an ephemeral
       // entry is a redirect record that happens to live somewhere the bee cannot grow from.
       // An id the CATALOG already holds is skipped: applyEphemeral refuses to publish one,
       // but a sweep must not depend on that having gone first.
       if (ctx.events && ctx.events.enabled) {
-        const seen = new Set(targets.map((t) => t.id))
         for (const [id, e] of ctx.events.snapshot()) {
-          if (!e || !e.redirect || !e.url || e.type === 'vod' || e.feedKey || seen.has(id)) continue
+          if (!e || !e.redirect || !e.url || e.type === 'vod' || e.feedKey || catalogIds.has(id)) continue
           targets.push({ id, url: e.url, headers: e.headers || null, wasLive: e.isLive !== false, drive: true })
         }
       }

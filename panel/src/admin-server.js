@@ -56,6 +56,10 @@
 //                                            providers) — they need a url, and {}/null clears them
 //   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,restricted?,url?,headers?,...}
 //                                            clearing the url clears the headers with it
+//   DELETE /api/streams                      {ids:[…]} BATCH full purge — ONE pass over the users
+//                                            for the whole set. Use this to retire more than one
+//                                            channel: the per-id route re-serialises every
+//                                            entitled user's whole ~455 KB record PER CHANNEL.
 //   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)
@@ -761,6 +765,33 @@ export function startAdminServer (ctx, opts = {}) {
           await packages.reconcilePackages(ctx) // a glob/category/source member may cover the new id (S44)
           act('stream-create', { streamId: b.id })
           return sendJson(res, 201, out)
+        }
+        // BATCH purge — the only safe way to retire a set of MANUAL channels, and the
+        // reason it exists as its own route rather than a loop in the caller. A user
+        // record embeds one sealed grant per channel and store.js pins valueEncoding
+        // 'json', so every put re-serialises the whole ~455 KB map: deleting D ids one
+        // at a time costs D x entitled-users x whole-record of permanent append-only
+        // growth. Retiring 90 channels across 12 holders that way is ~490 MB on a store
+        // that compacts to single-digit MB — the exact shape that filled the 24 GB disk
+        // in August. ops.deleteStreams already takes a SET and makes ONE pass over the
+        // users, so the same 90 cost one put per holder instead of ninety.
+        //
+        // `tolerant` is deliberately NOT set: a batch names ids the caller believes in,
+        // and a typo'd id should come back as 404 having changed nothing, exactly like
+        // the single-id route. removeSource keeps its own tolerant call for the case
+        // this one is not — a purge that must finish whatever went missing underneath it.
+        if (req.method === 'DELETE') {
+          const b = await readJson(req)
+          const ids = Array.isArray(b.ids) ? b.ids : null
+          if (!ids || !ids.length) return sendJson(res, 400, { error: 'ids must be a non-empty array of stream ids' })
+          // One snapshot for the whole batch, for the single-id route's reason: the purge
+          // takes each stream's KEY with it and a re-add mints a fresh one, so without a
+          // rollback point the old keys are simply gone — ninety times over here.
+          const rollback = await configRoutes.autoSnapshot(`the deletion of ${ids.length} channel(s)`)
+          const out = await ops.deleteStreams(ctx, ids)
+          await packages.reconcilePackages(ctx) // converge selector state after the purge (S44)
+          for (const o of out.ok) act('stream-delete', { streamId: o.id, grantsRevoked: o.grantsRevoked })
+          return sendJson(res, 200, { ...out, rollbackSnapshot: rollback })
         }
       }
       if (seg.length === 3) {

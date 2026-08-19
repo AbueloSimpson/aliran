@@ -6,6 +6,13 @@
 // starting over), put-only-on-flip bee frugality, the url-change counter reset,
 // and the network-layer self-outage guard that discards a sweep instead of
 // dimming the lineup.
+//
+// Group H covers the SCOPE, which is the one thing here that is not mechanics: by
+// default the probe judges the events drive and nothing else, because an ordinary
+// source is judged by its own daily rebuild and the panel probes from a single
+// datacenter address the FAST platforms refuse. Every other group pins `scope: 'all'`
+// — they exercise counters, guards and predicates that are identical in both scopes,
+// and catalog records are simply the cheaper stub to write them against.
 // npm run test:liveness
 import assert from 'assert'
 import http from 'http'
@@ -136,7 +143,7 @@ const quiet = () => {}
   state.dead = true
   const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`), 'catalog/ok1': redirect(`${BASE}/ok.m3u8`) })
   const activity = makeActivity()
-  const prober = makeLivenessProber({ config: {}, db, activity }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, scope: 'all', log: quiet })
 
   await prober.probeNow(); await prober.probeNow()
   assert.strictEqual(db.m.get('catalog/ev1').isLive, true, 'two failed sweeps: not flipped yet')
@@ -176,7 +183,7 @@ const quiet = () => {}
   // the opts one, because config is where a deployment's default actually comes from.
   state.dead = true
   const dbD = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`) })
-  const dflt = makeLivenessProber({ config: { liveness: { failsToFlip: 1 } }, db: dbD, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  const dflt = makeLivenessProber({ config: { liveness: { failsToFlip: 1 } }, db: dbD, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, scope: 'all', log: quiet })
   await dflt.probeNow()
   assert.strictEqual(dbD.m.get('catalog/ev1').isLive, false)
   state.dead = false
@@ -187,7 +194,7 @@ const quiet = () => {}
   // Raised to 3 it is symmetric with the way down, and a broken run starts over.
   state.dead = true
   const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`) })
-  const prober = makeLivenessProber({ config: { liveness: { successesToFlip: 3 } }, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  const prober = makeLivenessProber({ config: { liveness: { successesToFlip: 3 } }, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, scope: 'all', log: quiet })
   await prober.probeNow()
   assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'down on the first failure at failsToFlip 1')
   state.dead = false
@@ -209,7 +216,7 @@ const quiet = () => {}
 {
   state.dead = true
   const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8?token=aaa`) })
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, scope: 'all', log: quiet })
   await prober.probeNow() // fail 1
   db.m.set('catalog/ev1', redirect(`${BASE}/toggle.m3u8?token=bbb`)) // source sync re-stamped the token
   await prober.probeNow() // fail 2 — the rotation must NOT have reset the count
@@ -230,7 +237,7 @@ const quiet = () => {}
     if (!swapped) { swapped = true; db.m.set('catalog/mv1', redirect(`${BASE}/gone-b`)) }
     return fetch(url, opts)
   }
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, fetchImpl: swappingFetch, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, fetchImpl: swappingFetch, scope: 'all', log: quiet })
   await prober.probeNow()
   assert.strictEqual(db.m.get('catalog/mv1').isLive, true, 'the old url verdict must not dim the new url')
   await prober.probeNow() // url stable now; the counter survived, this sweep's own evidence flips
@@ -247,7 +254,7 @@ const quiet = () => {}
     'catalog/c': redirect(`${REFUSED}/c.m3u8`),
     'catalog/d': redirect(`${BASE}/ok.m3u8`)
   })
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, scope: 'all', log: quiet })
   for (let i = 0; i < 5; i++) {
     const r = await prober.probeNow()
     assert.strictEqual(r.discarded, true, 'the sweep is discarded, not applied')
@@ -266,7 +273,7 @@ const quiet = () => {}
     // there and would ping-pong puts against a prober flip forever. Never probed.
     'catalog/dual': redirect(`${BASE}/gone`, { feedKey: 'a'.repeat(64) })
   })
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, scope: 'all', log: quiet })
   const r = await prober.probeNow()
   assert.strictEqual(r.probed, 0, 'p2p, vod and DUAL records are all out of scope')
   assert.strictEqual(db.stats.puts, 0)
@@ -283,7 +290,7 @@ const quiet = () => {}
     'catalog/ded': redirect(`${BASE}/toggle.m3u8`),
     'catalog/ok2': redirect(`${BASE}/ok.m3u8`)
   })
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, scope: 'all', log: quiet })
   const r = await prober.probeNow()
   assert.strictEqual(r.discarded, undefined, 'one net-dead of four is not a self-outage')
   assert.strictEqual(r.probed, 4, 'every url got its verdict — the sweep survived the pathological hosts')
@@ -304,6 +311,50 @@ const quiet = () => {}
   assert.strictEqual(db.stats.puts, 0)
   prober.close()
   log('G: LIVENESS_INTERVAL_MINUTES=0 disables cleanly ✓')
+}
+
+// ===== H: SCOPE — the default judges the events drive and NOTHING else =====
+{
+  state.dead = true
+  // An ordinary catalog channel (one of the GitHub-rebuilt sources) sitting next to an
+  // events-drive entry, both dead to this probe right now. The DEFAULT scope must dim
+  // the event and leave the catalog channel alone: that source's own daily rebuild is
+  // the authority for it, and the panel's single datacenter address is not a viewer —
+  // it is the address the FAST platforms refuse (liveness.js, SCOPE).
+  const db = makeDb({ 'catalog/movies-pt.plutotv.x': redirect(`${BASE}/toggle.m3u8`) })
+  const drive = new Map([['ev-final', { title: 'e', redirect: true, url: `${BASE}/toggle.m3u8`, isLive: true, type: 'live' }]])
+  const applied = []
+  const events = {
+    enabled: true,
+    snapshot: () => drive,
+    applyLiveness (verdicts) {
+      for (const [id, v] of verdicts) applied.push([id, v.isLive])
+      return { ids: [...verdicts.keys()] }
+    }
+  }
+  const prober = makeLivenessProber({ config: {}, db, activity: makeActivity(), events }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  const r = await prober.probeNow()
+  assert.strictEqual(r.probed, 1, 'the default scope spent ONE probe — the events entry, never the catalog channel')
+  assert.deepStrictEqual(applied, [['ev-final', false]], 'the dead event still dims on the drive')
+  assert.strictEqual(db.m.get('catalog/movies-pt.plutotv.x').isLive, true, 'the catalog channel keeps its flag')
+  assert.strictEqual(db.stats.puts, 0, 'an events-scoped sweep writes NOTHING to the bee')
+  prober.close()
+
+  // A drive entry the CATALOG also governs is not a way back in: the catalog record wins
+  // for viewers, so probing it through its drive shadow would judge an ordinary channel
+  // by the back door — exactly what the scope exists to stop.
+  const shadow = new Map([['movies-pt.plutotv.x', { title: 's', redirect: true, url: `${BASE}/toggle.m3u8`, isLive: true, type: 'live' }]])
+  const shadowed = makeLivenessProber({ config: {}, db, activity: null, events: { enabled: true, snapshot: () => shadow, applyLiveness () { throw new Error('must not be reached') } } }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  assert.strictEqual((await shadowed.probeNow()).probed, 0, 'a drive entry shadowing a catalog id is skipped')
+  shadowed.close()
+
+  // …and the escape hatch still reaches the catalog for a hand-maintained lineup.
+  const wide = makeLivenessProber({ config: { liveness: { scope: 'all' } }, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  await wide.probeNow()
+  assert.strictEqual(db.m.get('catalog/movies-pt.plutotv.x').isLive, false, 'LIVENESS_SCOPE=all opts back into the catalog-wide reach')
+  wide.close()
+  state.dead = false
+  log('H: scope — the DEFAULT probes the events drive only; `all` opts back in ✓')
 }
 
 server.close()

@@ -370,6 +370,40 @@ try {
   assert.notStrictEqual(r.body.encryptionKey, encKey, 're-added stream mints a FRESH key')
   log('K: purge scrubs catalog+secret+grants+art; re-add mints a fresh key ✓')
 
+  // ===== Test K2: BATCH purge — one pass over the users for the whole set =====
+  // The reason this route exists. A user record carries a sealed grant per channel in ONE
+  // json value, so every put re-serialises the whole map: purging D ids through the per-id
+  // route writes each entitled user D times. That is what grew the signed bee past 12 GB
+  // in August, and at production scale (90 channels, 12 holders) it is ~490 MB of
+  // permanent, unreclaimable growth. So the batch must cost ONE put per holder, not D —
+  // and the bee's own length is the only honest way to assert that.
+  for (const id of ['batch-a', 'batch-b', 'batch-c']) {
+    r = await api('POST', '/api/streams', { id, title: 'Batch ' + id }, { token })
+    assert.strictEqual(r.status, 201, 'seed ' + id)
+    r = await api('POST', '/api/users/bob/grants', { streamId: id }, { token })
+    assert.strictEqual(r.status, 200, 'grant ' + id + ' to bob')
+  }
+  const lenBeforeBatch = db.core.length
+  r = await api('DELETE', '/api/streams', { ids: ['batch-a', 'batch-b', 'batch-c'] }, { token })
+  assert.strictEqual(r.status, 200, 'batch purge: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.ok.length, 3, 'all three purged')
+  const bobWrapped = (await db.get('user/bob')).value.wrapped || {}
+  for (const id of ['batch-a', 'batch-b', 'batch-c']) {
+    assert.strictEqual(await db.get('catalog/' + id), null, id + ' catalog record gone')
+    assert.strictEqual(loadSecrets(dirs.panel)[id], undefined, id + ' secret gone')
+    assert.ok(!(id in bobWrapped), id + ' grant scrubbed from bob')
+  }
+  // Three catalog deletes + ONE bob put is the whole cost. The per-id route would have put
+  // bob three times, so a regression to a loop shows up here as extra blocks and nowhere else.
+  const grewBatch = db.core.length - lenBeforeBatch
+  assert.ok(grewBatch <= 6, `batch purge of 3 ids grew the bee by ${grewBatch} blocks — a per-id loop would re-put every holder once PER id`)
+  // Non-tolerant, exactly like the single-id route: a batch names ids the caller believes in.
+  r = await api('DELETE', '/api/streams', { ids: ['no-such-stream'] }, { token })
+  assert.strictEqual(r.status, 404, 'an unknown id in the batch is 404')
+  r = await api('DELETE', '/api/streams', { ids: [] }, { token })
+  assert.strictEqual(r.status, 400, 'an empty batch is a 400, never a silent no-op')
+  log(`K2: batch purge scrubs the whole set in one pass over the users (${grewBatch} blocks for 3 ids) ✓`)
+
   // ===== Test L: user delete (S16a) =====
   r = await api('DELETE', '/api/users/carol', undefined, { token })
   assert.strictEqual(r.status, 200)
