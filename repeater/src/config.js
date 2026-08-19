@@ -25,8 +25,10 @@ export const config = {
   dataDir: process.env.DATA_DIR || './data',
   // The panel whose public catalog names the channels (same key viewers use).
   panelPubKey: process.env.PANEL_PUBKEY || null,
-  // Channel selection: 'all' (default), a comma-separated streamId list
+  // Channel selection: 'all' (default), 'none', a comma-separated streamId list
   // ('ch1,ch2'), or a category filter ('category:news' / 'category:news,sports').
+  // 'none' is for a box that mirrors only the guide/art/panel-availability drives below,
+  // which do not consult this selector. ⚠ EMPTY still means 'all', not 'none'.
   channels: process.env.CHANNELS || 'all',
   // How much of each channel's live window to keep, in seconds. MAY be deeper than
   // the origin's own HLS window — a regional blip-recovery buffer. Storage per

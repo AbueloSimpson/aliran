@@ -107,6 +107,14 @@ try {
   assert.deepStrictEqual(parseSelection('ch1, ch2'), { mode: 'ids', ids: ['ch1', 'ch2'] })
   assert.deepStrictEqual(parseSelection('category:News, Sports'), { mode: 'category', categories: ['news', 'sports'] })
   assert.throws(() => parseSelection('category:'), /category/)
+  // 'none' — a guide/art/panel-availability box that mirrors no channels at all. It must
+  // stay distinct from the EMPTY value, which means 'all': that default is what a plain
+  // CHANNELS= line in a .env falls back to, and mixing the two would turn "mirror nothing"
+  // into "mirror the entire lineup" on a box provisioned for neither.
+  assert.deepStrictEqual(parseSelection('none'), { mode: 'none' })
+  assert.notDeepStrictEqual(parseSelection(''), parseSelection('none'), 'empty is "all", never "none"')
+  assert.ok(!selects(parseSelection('none'), 'x', {}), 'none selects nothing')
+  assert.ok(!selects(parseSelection('none'), 'x', { category: ['News'], feedKey: 'a'.repeat(64) }), 'not even a fully-formed record')
   assert.ok(selects(parseSelection('all'), 'x', {}))
   assert.ok(selects(parseSelection('ch1'), 'ch1', {}) && !selects(parseSelection('ch1'), 'ch2', {}))
   assert.ok(selects(parseSelection('category:news'), 'x', { category: ['News'] }))

@@ -76,6 +76,13 @@ const HEX64 = /^[0-9a-f]{64}$/i
 export function parseSelection (v) {
   const s = (v == null || String(v).trim() === '') ? 'all' : String(v).trim()
   if (s === 'all') return { mode: 'all' }
+  // 'none' — mirror NO channels. The guide (EPG), art (ASSETS) and panel-availability
+  // (PANEL_DATA) mirrors are independent of this selector, so a box can exist to serve
+  // those alone. Before this mode the only way to say it was a selector contrived to
+  // match nothing ('category:__none__'), which reads like a typo, and silently starts
+  // mirroring the whole lineup the day someone creates a category by that name. An
+  // empty CHANNELS still means 'all' — that default is load-bearing and stays.
+  if (s === 'none') return { mode: 'none' }
   if (s.startsWith('category:')) {
     const categories = s.slice('category:'.length).split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
     if (!categories.length) throw new Error('CHANNELS category filter needs at least one category (e.g. category:news)')
@@ -88,6 +95,7 @@ export function parseSelection (v) {
 
 // Does a catalog record match the selection? (category may be a string or an array.)
 export function selects (selection, streamId, record) {
+  if (selection.mode === 'none') return false
   if (selection.mode === 'all') return true
   if (selection.mode === 'ids') return selection.ids.includes(streamId)
   const cats = [].concat(record?.category ?? []).map((c) => String(c).toLowerCase())

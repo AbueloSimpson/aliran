@@ -57,7 +57,7 @@ Docker (from the repo root): `docker compose -f deploy/docker-compose.repeater.y
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `PANEL_PUBKEY` | — (required) | The panel whose catalog names the channels |
-| `CHANNELS` | `all` | `all`, `ch1,ch2`, or `category:news[,sports]` |
+| `CHANNELS` | `all` | `all`, `none`, `ch1,ch2`, or `category:news[,sports]`. `none` mirrors no channels at all — for a box that exists to serve the `EPG` / `ASSETS` / `PANEL_DATA` mirrors, which are independent of this selector. An **empty** value still means `all`. |
 | `RETENTION_SECONDS` | `300` | Live window kept per channel (may exceed the origin's) |
 | `SWARM_MAX_PEERS` | `256` | Connection budget — a repeater exists to absorb fan-out |
 | `ANNOUNCE` | `0` (off) | Also advertise this box on the panel's catalog topic so cold viewers can bootstrap from it (exposes this box's IP there) |
