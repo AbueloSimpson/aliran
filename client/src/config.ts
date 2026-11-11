@@ -71,7 +71,7 @@ export interface ServiceDescriptor {
   }
   sections?: SectionToggles
   /** Language this brand's app starts in when the DEVICE language is not one of the
-   *  14 it ships (S56e): one of those codes, e.g. 'es'. The viewer's own device
+   *  15 it ships (S56e): one of those codes, e.g. 'es'. The viewer's own device
    *  language always wins, and their Settings choice wins over both. Omit for
    *  English. */
   defaultLocale?: string

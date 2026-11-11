@@ -24,8 +24,10 @@ scope or an event handler is fine — just do not cache its result across a loca
 
 ## Languages
 
-`en es pt fr nl de it ru tr hi ja zh-Hans ko th` — 14, English is the source. Arabic is
-deliberately out of v1, so there is no RTL handling anywhere in the app.
+`en es pt fr nl de it ru tr hi ja zh-Hans ko th so` — 15, English is the source. `so`
+(Somali) was added for the SomaliStream self-hosted brand; it is Latin-script LTR, so it
+needs no RTL handling. Arabic is deliberately out of v1, so there is no RTL handling
+anywhere in the app.
 
 ## en.json is the source, and it is already reviewed
 

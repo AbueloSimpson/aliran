@@ -20,10 +20,11 @@ import ja from '../locales/ja.json'
 import zhHans from '../locales/zh-Hans.json'
 import ko from '../locales/ko.json'
 import th from '../locales/th.json'
+import so from '../locales/so.json'
 
 export type Locale =
   | 'en' | 'es' | 'pt' | 'fr' | 'nl' | 'de' | 'it'
-  | 'ru' | 'tr' | 'hi' | 'ja' | 'zh-Hans' | 'ko' | 'th'
+  | 'ru' | 'tr' | 'hi' | 'ja' | 'zh-Hans' | 'ko' | 'th' | 'so'
 
 export type PluralForm = 'one' | 'few' | 'many' | 'other'
 
@@ -51,7 +52,8 @@ export const SUPPORTED_LOCALES: LocaleInfo[] = [
   { code: 'ja', nativeName: '日本語' },
   { code: 'zh-Hans', nativeName: '中文（简体）' },
   { code: 'ko', nativeName: '한국어' },
-  { code: 'th', nativeName: 'ไทย' }
+  { code: 'th', nativeName: 'ไทย' },
+  { code: 'so', nativeName: 'Soomaali' }
 ]
 
 // The forms pluralForm() can return for each locale — i.e. exactly the sibling keys a
@@ -72,7 +74,8 @@ export const PLURAL_FORMS: Record<Locale, PluralForm[]> = {
   ja: ['other'],
   'zh-Hans': ['other'],
   ko: ['other'],
-  th: ['other']
+  th: ['other'],
+  so: ['one', 'other']
 }
 
 const EN: Catalog = en
@@ -99,7 +102,8 @@ const CATALOGS: Partial<Record<Locale, Catalog>> = {
   ja,
   'zh-Hans': zhHans,
   ko,
-  th
+  th,
+  so
 }
 
 const CODES = new Set<string>(SUPPORTED_LOCALES.map((l) => l.code))

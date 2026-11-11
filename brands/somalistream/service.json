@@ -1,0 +1,33 @@
+{
+  "//": "SomaliStream — operator brand descriptor. Baked into branded Android/desktop builds by tools/brand.mjs. panelPubKey is the deployment's PUBLIC key (safe to ship). NEVER add a `dev` credentials block here.",
+  "panelPubKey": "15918cabba4758cca298e89658879575af65bd50b415edce6039cb09ffcc2516",
+  "name": "SomaliStream",
+  "defaultLocale": "so",
+  "branding": {
+    "colors": {
+      "primary": "#12A150",
+      "background": "#06140E",
+      "surface": "#0C2418",
+      "accent": "#4ADE80",
+      "text": "#EAFBF1",
+      "textDim": "#8FBFA6",
+      "live": "#F43F5E",
+      "focus": "#4ADE80",
+      "onPrimary": "#04210F",
+      "videoBackground": "#000000",
+      "overlay": "rgba(6, 20, 14, 0.82)",
+      "overlayStrong": "rgba(3, 12, 8, 0.94)",
+      "focusFill": "#EAFBF1",
+      "focusFillText": "#06140E",
+      "brandSurface": "#EAFBF1",
+      "brandText": "#0A2014"
+    }
+  },
+  "sections": {
+    "vod": false,
+    "favorites": true,
+    "search": true,
+    "settings": true,
+    "exit": true
+  }
+}

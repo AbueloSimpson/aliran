@@ -105,7 +105,7 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
             <span className="row-label">{t('settings.language')}</span>
             <span className="toggle-hint">{t('settings.language.hint')}</span>
           </span>
-          {/* The 14 names are rendered in their own language and never translated —
+          {/* The 15 names are rendered in their own language and never translated —
               nobody should have to read a foreign word to find their own language.
               Only the "follow the system" row names a behavior, so only it is copy. */}
           <select
