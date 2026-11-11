@@ -101,6 +101,39 @@ Both services use `network_mode: host`, so the dashboards stay on `127.0.0.1` an
 Hyperswarm hole-punching is not double-NATed. Reach the dashboards from your laptop over an
 SSH tunnel or a reverse proxy (`deploy/Caddyfile.example`).
 
+### 5b. This deployment — dashboards published on the runtime ingress
+
+This instance is deployed on an Agent Canvas runtime that publishes two HTTPS hosts
+straight to the sandbox, so the dashboards are reachable without an SSH tunnel. The panel
+admin and broadcaster control were re-bound off loopback to the ingress ports:
+
+| Surface | `.env` change | Local | Public |
+|---|---|---|---|
+| Panel admin | `panel/.env`: `ADMIN_HOST=0.0.0.0`, `ADMIN_PORT=12000` | `http://127.0.0.1:12000` | https://work-1-cokjyqzwfcnoxhzu.prod-runtime.all-hands.dev/ |
+| Broadcaster control | `broadcaster/.env`: `CONTROL_HOST=0.0.0.0`, `CONTROL_PORT=12001` | `http://127.0.0.1:12001` | https://work-2-cokjyqzwfcnoxhzu.prod-runtime.all-hands.dev/ |
+
+Original `.env` files are preserved as `.env.bak-deploy`. On a real VPS keep the dashboards
+on loopback and front them with Caddy — the API speaks plain HTTP and carries a bearer token.
+
+```bash
+# Apply the ingress bindings (already done here) and recreate the containers:
+docker compose up -d
+```
+
+Admin logins (rotate before any real launch — see §9):
+
+```bash
+# Panel admin:   admin / SomaliStream-Admin-2026!
+# Control admin: admin / SomaliStream-Control-2026!
+# Demo viewer:   alice / SomaliStream-Viewer-2026!   (entitled to `demo`)
+curl -s -X POST localhost:12000/api/login -H 'content-type: application/json' \
+     -d '{"username":"admin","password":"SomaliStream-Admin-2026!"}' | jq -r .token
+```
+
+Verified end to end: both dashboards sign in and render, the panel `/api/status` reports
+`serviceName: SomaliStream` with 1 live stream, and a real viewer played `demo` over the
+public DHT (`RESULT: PASS ✅`).
+
 The broadcaster registers its feed with the panel over the DHT at boot — the stream appears
 in the panel catalog by itself, with `isLive: true` once the first segment lands.
 
