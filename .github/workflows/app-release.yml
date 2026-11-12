@@ -86,6 +86,12 @@ jobs:
       - name: Install the app's dependencies (client/ is not a workspace)
         run: npm ci --prefix client --legacy-peer-deps
 
+      # src/worklet.ts imports ../backend/app.bundle.js, which is generated (and
+      # gitignored). Without it the release JS bundle task fails to resolve the
+      # module — the same step the repo's test:client lane runs.
+      - name: Bundle the Bare worklet backend
+        run: npm --prefix client run bundle-backend
+
       - name: Build the branded release APK
         env:
           ALIRAN_STORE_PASSWORD: ${{ secrets.ALIRAN_STORE_PASSWORD }}
