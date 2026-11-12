@@ -243,18 +243,33 @@ P2P services stay on this host because Hyperswarm needs inbound UDP.
 | Surface | What | Where |
 |---|---|---|
 | Vercel | MkDocs docs site (static) | https://aliran-somalistream-docs.vercel.app |
-| Render | Reseller panel (pure outbound HTTP) | Blueprint from `render.yaml` |
+| Render | Reseller panel (pure outbound HTTP) | https://aliran-reseller.onrender.com |
 | GitHub Actions | Branded Android APK + desktop AppImage | `app-release.yml`, on a `v*` tag |
 
 **Vercel** builds the docs via `vercel.json` (`mkdocs build --strict`) and
 auto-deploys on every push to the linked branch.
 
-**Render** reads `render.yaml` (New → Blueprint). It deploys only the reseller —
-`panel`, `broadcaster`, `repeater`, `library` and `epg` all speak Hyperswarm over
-UDP and need hole-punching, so they belong on a VPS/own hardware, not a PaaS.
-Set the three `sync: false` secrets in the dashboard (`PANEL_ADMIN_URL`,
-`PANEL_ADMIN_USER`, `PANEL_ADMIN_PASS`). Verified locally: the image builds, the
-service boots, `/healthz` returns 200, and `BRAND_NAME` white-labels the panel.
+**Render** runs the reseller — `panel`, `broadcaster`, `repeater`, `library` and
+`epg` all speak Hyperswarm over UDP and need hole-punching, so they belong on a
+VPS/own hardware, not a PaaS. The live service is `aliran-reseller`
+(`srv-dbqkielbedkc73dtndm0`), created from `render.yaml` (New → Blueprint, or the
+Render API) and linked to the repo with auto-deploy, so a push to the branch
+redeploys it. Verified: `/healthz` 200 (ledger invariant ok), `/` 200, and
+`branding.json` reports `"name":"SomaliStream"`. The reseller reaches the panel
+across the public ingress (`/api/system` → `reachable: true`, `serviceName:
+SomaliStream`).
+
+Two settings are load-bearing on Render and easy to miss:
+
+* `CONTROL_PORT=10000` — Render routes the public URL to `$PORT`, **not** to the
+  reseller's 3330 default. Without it the health check never connects and the
+  deploy is marked `update_failed` after a successful build.
+* `RESELLER_ADMIN_USER` / `RESELLER_ADMIN_PASS` — the free plan has no persistent
+  disk, so `/data` (the ledger, principals, cached panel token) is wiped on every
+  redeploy. `startReseller()` seeds a root admin from these on boot when none
+  exists, so the dashboard stays usable. For durable state, move to a paid
+  instance type and add the `disk:` block noted in `render.yaml`.
+
 
 **GitHub Actions** — push a `v*` tag (or run the workflow manually) to build the
 branded release APK and the Linux desktop player, then attach both plus checksums
@@ -285,8 +300,10 @@ Without `ALIRAN_KEYSTORE_BASE64` the workflow still succeeds but produces an
 * **Kernel network tuning.** The logs warn that the swarm UDP buffers are clamped
   (`sysctl -w net.core.rmem_max=2097152`). Fine for a demo; apply
   `deploy/sysctl/install.sh` before real viewer load.
-* **Render deployment.** No Render API key was available here, so the blueprint is
-  ready but not yet applied — create it from the dashboard.
+* **Durable Render storage.** The Render service runs on the free plan, whose
+  filesystem is ephemeral — `/data` resets on each redeploy (the env bootstrap
+  reseeds the root admin so the dashboard still works). Move to a paid instance
+  type and add the `disk:` block in `render.yaml` for persistent state.
 
 ## Secrets
 
