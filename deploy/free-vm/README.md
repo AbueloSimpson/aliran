@@ -51,6 +51,13 @@ Caddy and serves the dashboard over HTTPS with an automatic Let's Encrypt cert.
 Without `ALIRAN_PANEL_DATA_B64` the panel mints a **new** identity — the script
 prints the new key and pairing code and you must rebuild the apps.
 
+### Zero-touch variant (cloud-init)
+
+To skip SSH entirely, paste `cloud-init.yaml` (this directory) into the instance's
+"User data / cloud-init" box when creating it. Fill in the four values at the top
+first. The VM installs and starts everything on first boot; it touches
+`/var/log/aliran-bootstrap.done` when finished.
+
 ## Where the identity lives
 
 The panel's private keypair is the identity every app pins. It is small

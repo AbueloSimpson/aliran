@@ -1,0 +1,36 @@
+#cloud-config
+# SomaliStream / Aliran — cloud-init for a free VM.
+#
+# Paste this into the "User data / cloud-init" box when you create an instance
+# (Oracle Cloud Always Free Ampere A1, or GCP e2-micro). The instance boots,
+# installs Docker, restores the panel identity, and starts the panel +
+# broadcaster — no SSH session needed.
+#
+# Set the four values below before pasting. ALIRAN_PANEL_DATA_B64 is the value of
+# the fork's ALIRAN_PANEL_DATA_B64 Actions secret (see deploy/free-vm/README.md).
+#
+#   ALIRAN_PANEL_DATA_B64: '<base64 of the panel-data tar>'
+#   PANEL_ADMIN_PASSWORD: 'SomaliStream-Admin-2026!'
+#   CONTROL_ADMIN_PASSWORD: 'SomaliStream-Control-2026!'
+#   PUBLIC_HOST: 'panel.example.com'      # optional; enables Caddy HTTPS
+
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /etc/aliran-bootstrap.env
+    permissions: '0600'
+    content: |
+      ALIRAN_PANEL_DATA_B64='CHANGE_ME'
+      PANEL_ADMIN_PASSWORD='CHANGE_ME'
+      CONTROL_ADMIN_PASSWORD='CHANGE_ME'
+      PUBLIC_HOST=''
+
+runcmd:
+  - curl -fsSL https://raw.githubusercontent.com/tokexperiment090-arch/aliran/somalistream-selfhost/deploy/free-vm/bootstrap.sh -o /root/bootstrap.sh
+  - set -a && . /etc/aliran-bootstrap.env && set +a
+  - bash /root/bootstrap.sh
+  - touch /var/log/aliran-bootstrap.done
