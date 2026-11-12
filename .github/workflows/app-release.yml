@@ -65,6 +65,10 @@ jobs:
             echo "signed=true" >> "$GITHUB_OUTPUT"
             echo "Keystore restored — the APK will be release-signed."
           else
+            # signing.json names a keystore that is deliberately not in the repo.
+            # With no keystore to restore, remove it so brand.mjs falls back to the
+            # public debug keystore instead of failing on a missing file.
+            rm -f "client/brands/$BRAND/signing.json"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             echo "::warning::ALIRAN_KEYSTORE_BASE64 is not set — building an UNSIGNED (debug-key) APK. Add the secret to ship."
           fi
