@@ -1,0 +1,155 @@
+# Build the SomaliStream-branded Android app (and the desktop player) in CI and
+# attach the artifacts to a GitHub Release on a version tag.
+#
+# Signing: the brand dirs carry no credentials. `brands/somalistream/release.keystore`
+# is gitignored, so this workflow restores it from the ALIRAN_KEYSTORE_BASE64 secret
+# and passes the passwords through ALIRAN_STORE_PASSWORD / ALIRAN_KEY_PASSWORD. When
+# those secrets are absent the build still succeeds, but gradle falls back to the
+# public RN debug keystore and the APK is marked clearly as not shippable.
+#
+# The keystore is a PRIVATE SIGNING KEY. Keep it in repo secrets (Settings ->
+# Secrets and variables -> Actions), never in a committed file.
+name: app-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: Brand dir under brands/ to build
+        required: true
+        default: somalistream
+      version_name:
+        description: versionName to stamp (blank = gradle default)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  android:
+    name: Android APK (${{ github.event.inputs.brand || 'somalistream' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BRAND: ${{ github.event.inputs.brand || 'somalistream' }}
+      VERSION_NAME: ${{ github.event.inputs.version_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore the brand release keystore (if the secret is set)
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ALIRAN_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "brands/$BRAND/release.keystore"
+            chmod 600 "brands/$BRAND/release.keystore"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Keystore restored — the APK will be release-signed."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ALIRAN_KEYSTORE_BASE64 is not set — building an UNSIGNED (debug-key) APK. Add the secret to ship."
+          fi
+
+      # brand.mjs drives gradle itself, so the wrapper must be executable and the
+      # Android SDK is provided by the runner image.
+      - name: Install root deps
+        run: npm ci
+
+      - name: Build the branded release APK
+        env:
+          ALIRAN_STORE_PASSWORD: ${{ secrets.ALIRAN_STORE_PASSWORD }}
+          ALIRAN_KEY_PASSWORD: ${{ secrets.ALIRAN_KEY_PASSWORD }}
+        run: |
+          chmod +x client/android/gradlew
+          args=( "$BRAND" --variant release )
+          if [ -n "$VERSION_NAME" ]; then args+=( --version-name "$VERSION_NAME" ); fi
+          node tools/brand.mjs "${args[@]}"
+
+      - name: Locate + verify the APK
+        id: apk
+        run: |
+          apk=$(find client/android/app/build/outputs/apk -name '*-release.apk' | head -1)
+          [ -n "$apk" ] || { echo "no release APK produced"; exit 1; }
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$apk")" >> "$GITHUB_OUTPUT"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | head -8 || true
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -E "^package|application-label|launchable-activity" | head -5
+
+      - name: Checksums
+        run: sha256sum "${{ steps.apk.outputs.path }}" | tee "${{ steps.apk.outputs.path }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BRAND }}-android-${{ steps.keystore.outputs.signed == 'true' && 'signed' || 'unsigned' }}
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+          retention-days: 30
+          if-no-files-found: error
+
+  desktop:
+    name: Desktop player (${{ runner.os }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BRAND: ${{ github.event.inputs.brand || 'somalistream' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Bake the brand descriptor + renderer bundle
+        run: |
+          mkdir -p desktop/config
+          cp "brands/$BRAND/service.json" desktop/config/service.json
+          npm run build --workspace desktop
+      - name: Package (unsigned Linux)
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --linux AppImage --x64
+      - name: Checksums
+        run: sha256sum desktop/dist/*.AppImage | tee desktop/dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BRAND }}-desktop-linux-unsigned
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/SHA256SUMS.txt
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    name: Attach artifacts to the release
+    needs: [android, desktop]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
