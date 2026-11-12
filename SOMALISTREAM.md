@@ -10,7 +10,7 @@ Facts of this deployment:
 | Item | Value |
 | --- | --- |
 | Panel public key | `9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7` |
-| Service pairing code | `MQSZ-EYFS-84ZA` |
+| Service pairing code | `GWK6-HRSP-EX5J` |
 | Panel admin dashboard / API | `http://127.0.0.1:3210` |
 | Broadcaster control API | `http://127.0.0.1:3310` |
 | Brand id | `somalistream` (Android applicationId `com.aliranclient.somalistream`) |
@@ -235,10 +235,31 @@ node tools/config-validation-test.mjs → config-validation: ALL PASS
 **Brand build** — `node tools/brand.mjs somalistream --no-build` validates the
 descriptor and emits the Android overlay with `app_name = SomaliStream`.
 
+**The shipped app is connected to this panel** — the release artifacts bake the live
+panel key, so a viewer's Connect screen pairs with the running backend. Proven by
+inspecting the built bundles, not by trusting the descriptor:
+
+```
+release v1.0.1-somalistream  app-somalistream-release.apk   → assets/index.android.bundle contains 9566593c…  (and NOT 15918cab…)
+release v1.0.1-somalistream  Aliran-0.5.0.AppImage          → resources/config/service.json panelPubKey 9566593c…
+release v1.0.0-somalistream  app-somalistream-release.apk   → baked 15918cab…  ← the pre-re-init key; superseded
+```
+
+The key ties to the live pairing code: the panel logs `Service pairing code:
+GWK6-HRSP-EX5J` at boot, the reseller's `/api/system` reports the same
+(`panelKey` + `pairingCode`, `reachable: true`), and `pairingCode('9566593c…')`
+recomputes to `GWK6-HRSP-EX5J`.
+
 ## 9. Deploy surfaces (Vercel, Render, GitHub Actions)
 
 Three managed surfaces are wired to the fork `tokexperiment090-arch/aliran`; the
 P2P services stay on this host because Hyperswarm needs inbound UDP.
+
+The work is proposed to upstream as **PR #1** —
+https://github.com/AbueloSimpson/aliran/pull/1 (head
+`tokexperiment090-arch:somalistream-selfhost` → base `main`, mergeable). The fork is
+the deployment source because the deployment tokens cannot write to the upstream
+repo (they are collaborators, not maintainers); the PR is how the branch lands.
 
 | Surface | What | Where |
 |---|---|---|

@@ -58,11 +58,27 @@ curl -s localhost:3310/healthz           # broadcaster liveness
 
 ## GitHub tokens
 
-- `$GITHUB_TOKEN` is a GitHub **App** installation token (empty `x-oauth-scopes`).
-  It can push to the fork `tokexperiment090-arch/aliran` but **cannot open pull
-  requests** (`POST /pulls` → 403 "Resource not accessible by integration"). To land
-  work upstream, use the compare URL by hand:
-  `https://github.com/AbueloSimpson/aliran/compare/main...tokexperiment090-arch:aliran:somalistream-selfhost?expand=1`
+- Two tokens exist. The `fork` remote carries a **classic PAT** (`repo`, `workflow`,
+  `write:packages`) — it **can** open pull requests. The `origin` remote's `ghu_`
+  token is dead (`Bad credentials`), and `$GITHUB_TOKEN` is a GitHub **App**
+  installation token that cannot open PRs. Use the classic PAT for the PR API.
+- The token account (`tokexperiment090-arch`) is a **collaborator, not a maintainer**,
+  on upstream `AbueloSimpson/aliran` — it can open a PR from the fork but cannot push
+  branches to upstream. Land work via PR:
+  https://github.com/AbueloSimpson/aliran/pull/1
+
+## Branded-app key correctness
+
+- The Android/desktop artifacts bake `client/brands/<id>/service.json`'s `panelPubKey`
+  (the workflow copies it to `desktop/config/service.json`). That file is **tracked**,
+  so if the panel is re-initialized, the committed key goes stale and every shipped
+  build silently pairs with nothing. After a re-init, update the brand descriptor to
+  the new key (read it from the panel's `/data/keys/signing.json` or its boot log
+  `Panel public key:` line) and cut a new release.
+- Verify a build by extracting the artifact, not the source: the APK's
+  `assets/index.android.bundle` and the AppImage's `resources/config/service.json`
+  must contain the live key. The live pairing code is a pure function of the key
+  (`pairingCode(key)`, in `core/pairing.js`) and is printed by the panel at boot.
 
 ## State that is easy to lose
 
