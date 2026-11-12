@@ -235,19 +235,67 @@ node tools/config-validation-test.mjs → config-validation: ALL PASS
 **Brand build** — `node tools/brand.mjs somalistream --no-build` validates the
 descriptor and emits the Android overlay with `app_name = SomaliStream`.
 
+## 9. Deploy surfaces (Vercel, Render, GitHub Actions)
+
+Three managed surfaces are wired to the fork `tokexperiment090-arch/aliran`; the
+P2P services stay on this host because Hyperswarm needs inbound UDP.
+
+| Surface | What | Where |
+|---|---|---|
+| Vercel | MkDocs docs site (static) | https://aliran-somalistream-docs.vercel.app |
+| Render | Reseller panel (pure outbound HTTP) | Blueprint from `render.yaml` |
+| GitHub Actions | Branded Android APK + desktop AppImage | `app-release.yml`, on a `v*` tag |
+
+**Vercel** builds the docs via `vercel.json` (`mkdocs build --strict`) and
+auto-deploys on every push to the linked branch.
+
+**Render** reads `render.yaml` (New → Blueprint). It deploys only the reseller —
+`panel`, `broadcaster`, `repeater`, `library` and `epg` all speak Hyperswarm over
+UDP and need hole-punching, so they belong on a VPS/own hardware, not a PaaS.
+Set the three `sync: false` secrets in the dashboard (`PANEL_ADMIN_URL`,
+`PANEL_ADMIN_USER`, `PANEL_ADMIN_PASS`). Verified locally: the image builds, the
+service boots, `/healthz` returns 200, and `BRAND_NAME` white-labels the panel.
+
+**GitHub Actions** — push a `v*` tag (or run the workflow manually) to build the
+branded release APK and the Linux desktop player, then attach both plus checksums
+to a GitHub Release. Verified end to end: the release carries
+`app-somalistream-release.apk` with `package: com.aliranclient.somalistream` and
+`application-label: SomaliStream`.
+
+Set these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Purpose |
+|---|---|
+| `ALIRAN_KEYSTORE_BASE64` | `base64 -w0 client/brands/somalistream/release.keystore` — the release signing key |
+| `ALIRAN_STORE_PASSWORD` | keystore password |
+| `ALIRAN_KEY_PASSWORD` | key alias password |
+
+Without `ALIRAN_KEYSTORE_BASE64` the workflow still succeeds but produces an
+**unsigned** (debug-key) APK — the run emits a warning saying so.
+
 ## Not done here
 
-* **Signed release APK.** Needs Java + the Android SDK (absent on this box) and a release
-  keystore. `brand.mjs` warned that without `signing.json` the APK would use the public
-  debug keystore — not shippable. See `docs/white-label.md` "Shipping to production".
-* **Public TLS ingress.** The dashboards are on `127.0.0.1`. Expose them with
-  `deploy/Caddyfile.example` (or an SSH tunnel), never raw on the WAN.
+* **Signed release APK.** The CI workflow builds the APK, but with no keystore
+  secret it falls back to the public debug keystore — not shippable. Add the three
+  secrets above to get a release-signed APK. See `docs/white-label.md`
+  "Shipping to production".
+* **Public TLS ingress for the P2P services.** The dashboards sit on the runtime
+  ingress here; on a real VPS keep them on `127.0.0.1` and front them with
+  `deploy/Caddyfile.example`, never raw on the WAN.
 * **Kernel network tuning.** The logs warn that the swarm UDP buffers are clamped
   (`sysctl -w net.core.rmem_max=2097152`). Fine for a demo; apply
   `deploy/sysctl/install.sh` before real viewer load.
+* **Render deployment.** No Render API key was available here, so the blueprint is
+  ready but not yet applied — create it from the dashboard.
 
 ## Secrets
 
 `panel/.env`, `broadcaster/.env`, and everything under `panel/data` / `broadcaster/data`
 hold live credentials and keys. All are gitignored. Rotate the admin passwords before any
 real use; they were set from a shell here.
+
+> The sandbox was recycled once during this work and the panel data volume came up
+> empty. The panel was re-initialized (new keypair + pairing code) and the
+> broadcaster rewired to the new `PANEL_PUBKEY`/`PUBLISHER_KEY`; both dashboards
+> were re-verified live. A durable host should back up `panel/data` — the keys live
+> there.
