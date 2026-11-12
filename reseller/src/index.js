@@ -12,6 +12,7 @@ import { makePanelClient } from './panel-client.js'
 import { makeAccounts } from './accounts.js'
 import { makeSweeps } from './sweeps.js'
 import { startControlServer } from './control-server.js'
+import { addPrincipal, loadPrincipals } from './control-auth.js'
 import { initLogging } from './log.js'
 
 initLogging('reseller')
@@ -37,6 +38,27 @@ export async function startReseller (overrides = {}) {
   ctx.panel = makePanelClient(config)
   ctx.accounts = makeAccounts(ctx)
   ctx.sweeps = makeSweeps(ctx)
+
+  // Managed hosts with an ephemeral filesystem (Render's free plan, most PaaS
+  // containers) wipe DATA_DIR on every redeploy, so a root admin seeded once via
+  // the CLI would vanish. Seed it from the environment instead: if no root exists
+  // and RESELLER_ADMIN_USER/RESELLER_ADMIN_PASS are set, create one now. A no-op
+  // once a root is present, so it is safe on every boot.
+  const bootUser = process.env.RESELLER_ADMIN_USER
+  const bootPass = process.env.RESELLER_ADMIN_PASS
+  if (bootUser && bootPass) {
+    const existing = Object.values(loadPrincipals(config.dataDir))
+    if (!existing.some((p) => p.root)) {
+      try {
+        addPrincipal(ctx, { username: bootUser, password: bootPass, role: 'admin', root: true, parent: null, createdBy: 'env' })
+        console.log(`Seeded root admin "${bootUser}" from RESELLER_ADMIN_USER (no root existed)`)
+      } catch (err) {
+        // A bad bootstrap value must not take the service down — the health check
+        // has to keep answering so the deploy is not marked failed.
+        console.error(`RESELLER_ADMIN bootstrap failed (${err.message}); seed a root admin with reseller-cli.js add-admin`)
+      }
+    }
+  }
 
   const control = await startControlServer(ctx, {
     host: config.control.host,

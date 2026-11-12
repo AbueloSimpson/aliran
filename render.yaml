@@ -8,15 +8,17 @@
 # OUTBOUND calls to the panel admin API, so it runs happily on Render.
 #
 # Deploy: Render Dashboard -> New -> Blueprint -> pick this repo. Render reads this
-# file and prompts for the sync:false secrets below. There is no way to create a
-# Render service from here without a Render API key.
+# file and prompts for the sync:false secrets below. This is the same service that is
+# already live at https://aliran-reseller.onrender.com (created via the Render API;
+# the blueprint is the reproducible declaration of it).
 services:
   - type: web
     name: aliran-reseller
     runtime: docker
     dockerfilePath: ./reseller/Dockerfile
     dockerContext: .
-    plan: starter
+    plan: free
+    region: virginia
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
@@ -36,13 +38,24 @@ services:
       # Bind on all interfaces so Render's proxy can reach the dashboard.
       - key: CONTROL_HOST
         value: 0.0.0.0
+      # Render routes the public URL to $PORT (default 10000), NOT to the
+      # reseller's 3330 default — the health check never connects without this.
+      - key: CONTROL_PORT
+        value: 10000
       # Render's edge proxy is the only client, so throttle on its forwarded IP.
       - key: TRUST_PROXY_HEADER
         value: x-forwarded-for
       # White-label branding (SomaliStream).
       - key: BRAND_NAME
         value: SomaliStream
-    disk:
-      name: reseller-data
-      mountPath: /data
-      sizeGB: 1
+
+# NOTE — persistence. The `free` plan has no persistent disks, so /data (the
+# credit ledger, principals, cached panel token) is ephemeral and is reset on
+# every redeploy. For real use, move to a paid instance type and add:
+#
+#     disk:
+#       name: reseller-data
+#       mountPath: /data
+#       sizeGB: 1
+#
+# The free tier is fine for a demo/smoke test of the deploy path.
