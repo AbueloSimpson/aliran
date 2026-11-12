@@ -277,6 +277,7 @@ repo (they are collaborators, not maintainers); the PR is how the branch lands.
 |---|---|---|
 | Vercel | MkDocs docs site (static) | https://aliran-somalistream-docs.vercel.app |
 | Render | Reseller panel (pure outbound HTTP) | https://aliran-reseller.onrender.com |
+| GitHub Pages | Docs site (static, from the fork) | https://tokexperiment090-arch.github.io/aliran/ |
 | GitHub Actions | Branded Android APK + desktop AppImage | `app-release.yml`, on a `v*` tag |
 
 **Vercel** builds the docs via `vercel.json` (`mkdocs build --strict`) and
