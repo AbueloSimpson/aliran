@@ -9,7 +9,7 @@ Facts of this deployment:
 
 | Item | Value |
 | --- | --- |
-| Panel public key | `15918cabba4758cca298e89658879575af65bd50b415edce6039cb09ffcc2516` |
+| Panel public key | `9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7` |
 | Service pairing code | `MQSZ-EYFS-84ZA` |
 | Panel admin dashboard / API | `http://127.0.0.1:3210` |
 | Broadcaster control API | `http://127.0.0.1:3310` |
@@ -77,7 +77,7 @@ ADMIN_ENABLED=1
 `broadcaster/.env` — point the broadcaster at the panel and register its feed:
 
 ```
-PANEL_PUBKEY=15918cabba4758cca298e89658879575af65bd50b415edce6039cb09ffcc2516
+PANEL_PUBKEY=9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7
 PUBLISHER_KEY=<from `docker compose run --rm panel node src/admin-cli.js add-publisher`>
 CONTROL_ENABLED=1
 STREAM_ID=demo
