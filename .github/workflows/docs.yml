@@ -4,7 +4,7 @@ name: docs
 
 on:
   push:
-    branches: [main]
+    branches: [main, somalistream-selfhost]
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
