@@ -75,8 +75,16 @@ jobs:
 
       # brand.mjs drives gradle itself, so the wrapper must be executable and the
       # Android SDK is provided by the runner image.
+      #
+      # client/ is deliberately NOT an npm workspace (it carries its own
+      # react-native-tvos toolchain), so the root `npm ci` never installs it. Its
+      # deps must be installed separately, and with --legacy-peer-deps — the RN
+      # toolchain pins a strict peer range, so a plain `npm ci` dies with ERESOLVE.
       - name: Install root deps
         run: npm ci
+
+      - name: Install the app's dependencies (client/ is not a workspace)
+        run: npm ci --prefix client --legacy-peer-deps
 
       - name: Build the branded release APK
         env:
@@ -95,8 +103,9 @@ jobs:
           [ -n "$apk" ] || { echo "no release APK produced"; exit 1; }
           echo "path=$apk" >> "$GITHUB_OUTPUT"
           echo "name=$(basename "$apk")" >> "$GITHUB_OUTPUT"
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | head -8 || true
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -E "^package|application-label|launchable-activity" | head -5
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$bt/apksigner" verify --print-certs "$apk" | head -8 || true
+          "$bt/aapt" dump badging "$apk" | grep -E "^package|application-label|launchable-activity" | head -5 || true
 
       - name: Checksums
         run: sha256sum "${{ steps.apk.outputs.path }}" | tee "${{ steps.apk.outputs.path }}.sha256"
