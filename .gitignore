@@ -79,3 +79,12 @@ mcp/*.tgz
 # (schedule dumps, saved provider pages). Working notes, not repo content.
 /mlbapi.json
 /sx.html
+
+# Brand release keystores — private signing keys, never commit
+*.keystore
+*.jks
+
+# Panel identity backups — PRIVATE keys, never commit
+.identity-backup/
+*.tgz.b64
+panel-data.tgz*

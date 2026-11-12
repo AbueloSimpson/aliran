@@ -71,7 +71,7 @@
 //                                        connections, wire rx/tx per second, cached
 //                                        replica bytes; nulls where a source failed)
 //        { type:'language-set', language }         -> the viewer's UI-language choice
-//                                        (S56e): one of the 14 supported codes, or null
+//                                        (S56e): one of the 15 supported codes, or null
 //                                        to clear the override and follow the DEVICE
 //                                        language again. Anything else is stored as
 //                                        null — an unknown code must never outlive the
@@ -485,7 +485,7 @@ function gateVodHistory (v) {
 // TypeScript — so tools/i18n-test.mjs asserts the two lists stay identical. Whitelisted
 // on READ as well as on write: the prefs file is plain JSON on the device, and a code
 // no build understands must resolve to "no override", never to a blank UI.
-const LANGUAGES = ['en', 'es', 'pt', 'fr', 'nl', 'de', 'it', 'ru', 'tr', 'hi', 'ja', 'zh-Hans', 'ko', 'th']
+const LANGUAGES = ['en', 'es', 'pt', 'fr', 'nl', 'de', 'it', 'ru', 'tr', 'hi', 'ja', 'zh-Hans', 'ko', 'th', 'so']
 
 function readPrefs () {
   try {

@@ -36,6 +36,7 @@ const NAMES: Record<string, string> = {
   hu: 'Hungarian', hun: 'Hungarian',
   ro: 'Romanian', ron: 'Romanian', rum: 'Romanian',
   th: 'Thai', tha: 'Thai',
+  so: 'Somali', som: 'Somali',
   vi: 'Vietnamese', vie: 'Vietnamese',
   id: 'Indonesian', ind: 'Indonesian',
   ms: 'Malay', msa: 'Malay', may: 'Malay',

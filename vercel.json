@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "echo 'static MkDocs build — no node install needed'",
+  "buildCommand": "python3 -m pip install --quiet --break-system-packages mkdocs-material mkdocs-mermaid2-plugin && python3 -m mkdocs build --strict",
+  "outputDirectory": "site",
+  "cleanUrls": true,
+  "trailingSlash": false
+}
