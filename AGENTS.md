@@ -42,12 +42,27 @@ curl -s localhost:3310/healthz           # broadcaster liveness
 
 ## Deploy surfaces
 
-- **Vercel** — docs site via `vercel.json` (`mkdocs build --strict`).
-- **Render** — `render.yaml` blueprint; deploys the reseller only.
+- **Vercel** — docs site via `vercel.json` (`mkdocs build --strict`). Live at
+  https://aliran-somalistream-docs.vercel.app, linked to the repo for auto-deploy.
+- **Render** — `render.yaml` blueprint; deploys the reseller only. Live at
+  https://aliran-reseller.onrender.com (service `srv-dbqkielbedkc73dtndm0`),
+  repo-linked with auto-deploy. Two settings are load-bearing:
+  `CONTROL_PORT=10000` (Render routes the URL to `$PORT`, not 3330 — without it the
+  deploy ends `update_failed` after a clean build) and `RESELLER_ADMIN_USER`/`_PASS`
+  (the free plan's `/data` is ephemeral; `startReseller()` reseeds a root admin on
+  boot). Create/update via the Render API with the `RENDER_API_KEY` secret.
 - **GitHub Actions** — `.github/workflows/app-release.yml`; on a `v*` tag it builds
   the branded release APK + Linux desktop player and attaches them to a Release.
   Lint workflow edits with `actionlint` before pushing (a job `name` may not use
   the `runner` context, for example).
+
+## GitHub tokens
+
+- `$GITHUB_TOKEN` is a GitHub **App** installation token (empty `x-oauth-scopes`).
+  It can push to the fork `tokexperiment090-arch/aliran` but **cannot open pull
+  requests** (`POST /pulls` → 403 "Resource not accessible by integration"). To land
+  work upstream, use the compare URL by hand:
+  `https://github.com/AbueloSimpson/aliran/compare/main...tokexperiment090-arch:aliran:somalistream-selfhost?expand=1`
 
 ## State that is easy to lose
 
