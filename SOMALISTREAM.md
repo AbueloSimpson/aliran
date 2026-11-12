@@ -159,8 +159,8 @@ The Android/desktop app is built from `client/`. A brand build swaps in the desc
 generates the Android resource overlay:
 
 ```bash
-node tools/brand.mjs brands/somalistream            # validate + build APK
-node tools/brand.mjs brands/somalistream --no-build  # validate + res overlay only
+node tools/brand.mjs somalistream            # validate + build APK
+node tools/brand.mjs somalistream --no-build  # validate + res overlay only
 ```
 
 `--no-build` needs no Android SDK and proves the brand is well-formed: it writes
@@ -171,7 +171,7 @@ SDK (not installed on this box — see [Not done here](#not-done-here)).
 Point the desktop app at this panel by copying the descriptor:
 
 ```bash
-cp brands/somalistream/service.json desktop/config/service.json
+cp client/brands/somalistream/service.json desktop/config/service.json
 ```
 
 ## 8. Somali localization
@@ -232,7 +232,7 @@ node tools/theme-test.mjs           → theme: PASS
 node tools/config-validation-test.mjs → config-validation: ALL PASS
 ```
 
-**Brand build** — `node tools/brand.mjs brands/somalistream --no-build` validates the
+**Brand build** — `node tools/brand.mjs somalistream --no-build` validates the
 descriptor and emits the Android overlay with `app_name = SomaliStream`.
 
 ## Not done here
