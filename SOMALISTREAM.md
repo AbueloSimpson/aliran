@@ -77,7 +77,7 @@ ADMIN_ENABLED=1
 `broadcaster/.env` — point the broadcaster at the panel and register its feed:
 
 ```
-PANEL_PUBKEY=5cd99321ea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7
+PANEL_PUBKEY=5cd9932157447679496eafc67e0c8c245d4cac0c13e73e087d4126e62a4bae5c
 PUBLISHER_KEY=<from `docker compose run --rm panel node src/admin-cli.js add-publisher`>
 CONTROL_ENABLED=1
 STREAM_ID=demo
