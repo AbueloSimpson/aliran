@@ -80,6 +80,22 @@ curl -s localhost:3310/healthz           # broadcaster liveness
   must contain the live key. The live pairing code is a pure function of the key
   (`pairingCode(key)`, in `core/pairing.js`) and is printed by the panel at boot.
 
+## The panel identity is the whole deployment — back it up
+
+- The panel keypair in `panel-data:/data/keys` (`signing.json`, `oprf.key`,
+  `publisher.json`) is what every app pins. Lose it and every shipped app is dead
+  until a rebuild. On this Agent Canvas runtime the sandbox **recycles and wipes the
+  Docker volume** — it has happened twice. Treat the identity as something to copy
+  off-box immediately after any `init`.
+- Backups live in two places: `deploy/backup.sh` (cold tar of the volume) and the
+  fork's encrypted Actions secrets — `ALIRAN_PANEL_DATA_B64` (base64 of the `/data`
+  tar) plus the admin passwords. Push a fresh one with
+  `deploy/free-vm/push-identity.sh`.
+- Free hosts that can actually run the P2P services (inbound UDP + persistent
+  identity) are **free VMs**, not PaaS: Oracle Always Free (Ampere A1) or GCP
+  e2-micro. `deploy/free-vm/bootstrap.sh` stands the stack up on one and restores
+  the identity; the restore path is verified (same key, same pairing code).
+
 ## State that is easy to lose
 
 - `panel/data` holds the panel keypair, pairing code, admins and the DB. Back it up;

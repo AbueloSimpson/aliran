@@ -1,6 +1,6 @@
 {
   "//": "SomaliStream — operator brand descriptor. Baked into branded Android/desktop builds by tools/brand.mjs. panelPubKey is the deployment's PUBLIC key (safe to ship). NEVER add a `dev` credentials block here.",
-  "panelPubKey": "9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7",
+  "panelPubKey": "5cd9932157447679496eafc67e0c8c245d4cac0c13e73e087d4126e62a4bae5c",
   "name": "SomaliStream",
   "defaultLocale": "so",
   "branding": {

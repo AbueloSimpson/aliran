@@ -9,10 +9,10 @@ Facts of this deployment:
 
 | Item | Value |
 | --- | --- |
-| Panel public key | `9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7` |
-| Service pairing code | `GWK6-HRSP-EX5J` |
-| Panel admin dashboard / API | `http://127.0.0.1:3210` |
-| Broadcaster control API | `http://127.0.0.1:3310` |
+| Panel public key | `5cd9932157447679496eafc67e0c8c245d4cac0c13e73e087d4126e62a4bae5c` |
+| Service pairing code | `10ZJ-Y4DK-ZP17` |
+| Panel admin dashboard / API | `http://127.0.0.1:12000` (ingress: work-1 host) |
+| Broadcaster control API | `http://127.0.0.1:12001` (ingress: work-2 host) |
 | Brand id | `somalistream` (Android applicationId `com.aliranclient.somalistream`) |
 | Default locale | `so` (Somali) |
 | Demo channel | `demo` (live, `test` source: 720p colour bars + 440 Hz tone) |
@@ -77,7 +77,7 @@ ADMIN_ENABLED=1
 `broadcaster/.env` — point the broadcaster at the panel and register its feed:
 
 ```
-PANEL_PUBKEY=9566593cea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7
+PANEL_PUBKEY=5cd99321ea7cf637b8c3e63b0e640d02aaa1c3f2ea99ac33c414131fba2bf0e7
 PUBLISHER_KEY=<from `docker compose run --rm panel node src/admin-cli.js add-publisher`>
 CONTROL_ENABLED=1
 STREAM_ID=demo
@@ -240,15 +240,27 @@ panel key, so a viewer's Connect screen pairs with the running backend. Proven b
 inspecting the built bundles, not by trusting the descriptor:
 
 ```
-release v1.0.1-somalistream  app-somalistream-release.apk   → assets/index.android.bundle contains 9566593c…  (and NOT 15918cab…)
-release v1.0.1-somalistream  Aliran-0.5.0.AppImage          → resources/config/service.json panelPubKey 9566593c…
-release v1.0.0-somalistream  app-somalistream-release.apk   → baked 15918cab…  ← the pre-re-init key; superseded
+release v1.0.2-somalistream  app-somalistream-release.apk   → assets/index.android.bundle contains 5cd99321…  (and NOT the superseded keys)
+release v1.0.2-somalistream  Aliran-0.5.0.AppImage          → resources/config/service.json panelPubKey 5cd99321…
+release v1.0.1-somalistream  app-somalistream-release.apk   → baked 9566593c…  ← pre-recycle key; superseded
+release v1.0.0-somalistream  app-somalistream-release.apk   → baked 15918cab…  ← the very first key; superseded
 ```
 
+> History worth knowing: the panel identity has been re-minted twice, because the
+> Agent Canvas runtime recycled the sandbox and wiped the `panel-data` volume each
+> time. The first key was `15918cab…`, the second `9566593c…`, the current one
+> `5cd99321…`. This is exactly why `deploy/free-vm/` exists: on a free VM (Oracle
+> Always Free / GCP e2-micro) the volume persists, and the identity is also kept in
+> encrypted GitHub secrets, so a re-provision restores the **same** key.
+
 The key ties to the live pairing code: the panel logs `Service pairing code:
-GWK6-HRSP-EX5J` at boot, the reseller's `/api/system` reports the same
-(`panelKey` + `pairingCode`, `reachable: true`), and `pairingCode('9566593c…')`
-recomputes to `GWK6-HRSP-EX5J`.
+10ZJ-Y4DK-ZP17` at boot, the reseller's `/api/system` reports the same
+(`panelKey` + `pairingCode`, `reachable: true`), and `pairingCode('5cd99321…')`
+recomputes to `10ZJ-Y4DK-ZP17`.
+
+**The identity survives a fresh host** — restoring `ALIRAN_PANEL_DATA_B64` into an
+empty volume booted a panel that printed the identical key `5cd99321…` and pairing
+code `10ZJ-Y4DK-ZP17` (see `deploy/free-vm/`).
 
 ## 9. Deploy surfaces (Vercel, Render, GitHub Actions)
 
@@ -308,6 +320,35 @@ Set these repository secrets (Settings → Secrets and variables → Actions):
 
 Without `ALIRAN_KEYSTORE_BASE64` the workflow still succeeds but produces an
 **unsigned** (debug-key) APK — the run emits a warning saying so.
+
+## 10. Free always-on host (the durable home for the P2P services)
+
+The P2P services need inbound UDP, a long-lived process and a persistent identity,
+so no PaaS free tier can host them. The free path is a **free VM**:
+
+| Provider | Free tier |
+|---|---|
+| Oracle Cloud Always Free | Ampere A1 ARM, up to 4 OCPU / 24 GB, always on |
+| Google Cloud free tier | `e2-micro` in us-central1 / us-west1 / us-east1 |
+| Home server | your own hardware |
+
+`deploy/free-vm/bootstrap.sh` does the whole setup in one command on a fresh Ubuntu
+VM: installs Docker, clones the branch, **restores the panel identity** (so the key
+and pairing code survive), seeds the admins, and brings up the panel + broadcaster;
+with `PUBLIC_HOST` set it also installs Caddy for automatic HTTPS.
+
+```bash
+export ALIRAN_PANEL_DATA_B64='<base64 of the panel-data tar>'   # from GitHub secrets
+export PANEL_ADMIN_PASSWORD='...'
+export CONTROL_ADMIN_PASSWORD='...'
+export PUBLIC_HOST='panel.example.com'
+sudo -E bash deploy/free-vm/bootstrap.sh
+```
+
+Open **UDP 40000–41000** (Hyperswarm) and **TCP 443** (dashboard) in the VM firewall.
+The identity is kept in three places: the live volume, the encrypted GitHub secrets
+(`ALIRAN_PANEL_DATA_B64` + passwords, pushed with `deploy/free-vm/push-identity.sh`),
+and your own offline copy from `deploy/backup.sh`.
 
 ## Not done here
 

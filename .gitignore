@@ -83,3 +83,8 @@ mcp/*.tgz
 # Brand release keystores — private signing keys, never commit
 *.keystore
 *.jks
+
+# Panel identity backups — PRIVATE keys, never commit
+.identity-backup/
+*.tgz.b64
+panel-data.tgz*
